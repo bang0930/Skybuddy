@@ -1,0 +1,23 @@
+# Git metadata is unnecessary inside application images.
+.git
+.gitignore
+.github
+
+# Local Python environments and caches
+.venv
+venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+
+# Local environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Documentation and local artifacts are not needed at runtime.
+docs
+tmp
+*.log
+
