@@ -1,0 +1,75 @@
+# Compose는 여러 컨테이너를 하나의 개발 환경으로 실행하기 위한 설정이다.
+# 이 파일은 현재 AirSim이나 실제 LLM을 실행하지 않고, 두 Python 서비스의 경계만 검증한다.
+name: skybuddy
+
+services:
+  orchestrator:
+    # 이미지가 없으면 지정한 Dockerfile로 로컬 이미지를 빌드한다.
+    build:
+      context: .
+      dockerfile: docker/orchestrator.Dockerfile
+      args:
+        # 팀 공통 Python 버전이 확정되면 .env에서 한 번에 변경할 수 있다.
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.11-slim}
+    # 호스트의 8001 포트를 컨테이너의 8001 포트에 연결한다.
+    ports:
+      - "${ORCHESTRATOR_PORT:-8001}:8001"
+    # 개발 중 수정한 코드를 이미지 재빌드 없이 컨테이너에 반영한다.
+    volumes:
+      - ./services/orchestrator/app:/app/app:ro
+    # Dockerfile의 기본 명령을 개발용 reload 명령으로 덮어쓴다.
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+    init: true
+    healthcheck:
+      # slim 이미지에는 curl이 없으므로 Python 표준 라이브러리로 상태를 확인한다.
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://localhost:8001/health', timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  middleware:
+    build:
+      context: .
+      dockerfile: docker/middleware.Dockerfile
+      args:
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.11-slim}
+    ports:
+      - "${MIDDLEWARE_PORT:-8000}:8000"
+    environment:
+      # Compose 내부에서는 서비스 이름(orchestrator)이 DNS 주소로 사용된다.
+      ORCHESTRATOR_URL: http://orchestrator:8001
+      # AirSim은 현재 Compose 외부의 호스트 또는 원격 환경에서 실행한다.
+      AIRSIM_HOST: ${AIRSIM_HOST:-host.docker.internal}
+      AIRSIM_PORT: ${AIRSIM_PORT:-41451}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./services/middleware/app:/app/app:ro
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    init: true
+    depends_on:
+      # 단순한 실행 순서가 아니라 orchestrator의 healthcheck 통과를 기다린다.
+      orchestrator:
+        condition: service_healthy
+    extra_hosts:
+      # Linux에서도 컨테이너가 host.docker.internal로 호스트에 접근할 수 있게 한다.
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://localhost:8000/health', timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
