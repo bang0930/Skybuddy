@@ -54,7 +54,7 @@ LLM은 비행기의 자세나 모터를 직접 제어하지 않습니다. 탐색
 
 | 담당 | 역할 |
 |---|---|
-| 박병언 | 통합 미들웨어, API Gateway, 데이터 스키마, 명령 변환 및 Fallback |
+| 박병언 | 통합 미들웨어, API Gateway, 데이터 스키마, 로그 수집·처리 및 KPI 파이프라인, 명령 변환 및 Fallback |
 | 배성열 | LLM 오케스트레이션, MCP 인터페이스, 임무 배정 및 재배정 |
 | 이태우 | AirSim/ArduPilot SITL, MAVLink 연동, 수색 시나리오 및 KPI 실험 |
 
