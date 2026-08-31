@@ -31,6 +31,7 @@
       },
       "battery_percent": 82.5,
       "status": "available",
+      "connection_status": "connected",
       "observed_at": "2026-08-31T12:00:00Z"
     }
   ],
@@ -56,7 +57,18 @@
 | `available` | 새 임무를 받을 수 있음 |
 | `assigned` | 현재 임무가 할당됨 |
 | `returning` | 복귀 중이므로 새 임무를 받을 수 없음 |
-| `unavailable` | 장애, 통신 단절 등으로 사용할 수 없음 |
+| `unavailable` | 고장 또는 안전상 이유로 임무를 수행할 수 없음 |
+
+`DroneState.connection_status`는 운용 상태와 독립적으로 다음 값을 사용합니다.
+
+| 값 | 의미 |
+|---|---|
+| `connected` | 미들웨어와 정상적으로 통신 중 |
+| `disconnected` | 통신이 끊겼으며 재연결 또는 대기 판단이 필요함 |
+
+통신이 끊긴 드론도 마지막으로 확인된 운용 상태는 유지합니다. 예를 들어 임무 수행 중 통신이
+끊기면 `status`는 `assigned`, `connection_status`는 `disconnected`로 표현합니다. 이를 통해
+고장이 확인된 `unavailable` 상태와 일시적인 통신 두절에 서로 다른 Fallback을 적용할 수 있습니다.
 
 ## Mission Plan
 

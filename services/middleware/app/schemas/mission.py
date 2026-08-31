@@ -44,12 +44,19 @@ class GeoPosition(GeoCoordinate):
 
 
 class DroneStatus(str, Enum):
-    """Availability state used by mission allocation and fallback logic."""
+    """Operational state used by mission allocation and fallback logic."""
 
     AVAILABLE = "available"
     ASSIGNED = "assigned"
     RETURNING = "returning"
     UNAVAILABLE = "unavailable"
+
+
+class ConnectionStatus(str, Enum):
+    """Communication state tracked independently from drone operation."""
+
+    CONNECTED = "connected"
+    DISCONNECTED = "disconnected"
 
 
 class DroneState(ContractModel):
@@ -59,6 +66,7 @@ class DroneState(ContractModel):
     position: GeoPosition
     battery_percent: float = Field(ge=0, le=100)
     status: DroneStatus
+    connection_status: ConnectionStatus
     observed_at: datetime
 
     @field_validator("observed_at")

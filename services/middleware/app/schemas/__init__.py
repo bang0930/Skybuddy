@@ -1,6 +1,7 @@
 """Public data contracts for the SkyBuddy middleware."""
 
 from .mission import (
+    ConnectionStatus,
     DroneState,
     DroneStatus,
     GeoCoordinate,
@@ -12,6 +13,7 @@ from .mission import (
 )
 
 __all__ = [
+    "ConnectionStatus",
     "DroneState",
     "DroneStatus",
     "GeoCoordinate",

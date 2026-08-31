@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.schemas import (
+    ConnectionStatus,
     DroneState,
     DroneStatus,
     GeoCoordinate,
@@ -19,13 +20,19 @@ from app.schemas import (
 NOW = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
 
 
-def make_drone(drone_id: str = "drone-01") -> DroneState:
+def make_drone(
+    drone_id: str = "drone-01",
+    *,
+    status: DroneStatus = DroneStatus.AVAILABLE,
+    connection_status: ConnectionStatus = ConnectionStatus.CONNECTED,
+) -> DroneState:
     """Build a valid drone state for focused validation tests."""
     return DroneState(
         drone_id=drone_id,
         position=GeoPosition(latitude=37.45, longitude=127.12, altitude_m=220),
         battery_percent=82.5,
-        status=DroneStatus.AVAILABLE,
+        status=status,
+        connection_status=connection_status,
         observed_at=NOW,
     )
 
@@ -56,6 +63,17 @@ def test_valid_mission_context_normalizes_instruction() -> None:
     assert context.model_dump(mode="json")["drones"][0]["status"] == "available"
 
 
+def test_disconnected_drone_preserves_last_operational_status() -> None:
+    drone = make_drone(
+        status=DroneStatus.ASSIGNED,
+        connection_status=ConnectionStatus.DISCONNECTED,
+    )
+
+    serialized = drone.model_dump(mode="json")
+    assert serialized["status"] == "assigned"
+    assert serialized["connection_status"] == "disconnected"
+
+
 @pytest.mark.parametrize("battery_percent", [-0.1, 100.1])
 def test_drone_rejects_battery_outside_percentage_range(
     battery_percent: float,
@@ -66,6 +84,7 @@ def test_drone_rejects_battery_outside_percentage_range(
             position=GeoPosition(latitude=37.45, longitude=127.12, altitude_m=220),
             battery_percent=battery_percent,
             status=DroneStatus.AVAILABLE,
+            connection_status=ConnectionStatus.CONNECTED,
             observed_at=NOW,
         )
 
@@ -153,3 +172,13 @@ def test_mission_plan_exposes_json_schema() -> None:
     assert schema["title"] == "MissionPlan"
     assert schema["additionalProperties"] is False
     assert set(schema["required"]) == {"mission_id", "assignments", "generated_at"}
+
+
+def test_drone_state_json_schema_requires_connection_status() -> None:
+    schema = DroneState.model_json_schema()
+
+    assert "connection_status" in schema["required"]
+    assert schema["$defs"]["ConnectionStatus"]["enum"] == [
+        "connected",
+        "disconnected",
+    ]
