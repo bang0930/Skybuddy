@@ -142,7 +142,12 @@ class MissionAssignment(ContractModel):
 
     drone_id: Identifier
     area_id: Identifier
-    priority: int = Field(default=1, ge=1, le=100)
+    priority: int = Field(
+        default=1,
+        ge=1,
+        le=100,
+        description="Execution priority from 1 (lowest) to 100 (highest).",
+    )
 
 
 class MissionPlan(ContractModel):

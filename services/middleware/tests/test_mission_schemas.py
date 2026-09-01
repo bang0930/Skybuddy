@@ -172,6 +172,15 @@ def test_mission_plan_exposes_json_schema() -> None:
     assert schema["title"] == "MissionPlan"
     assert schema["additionalProperties"] is False
     assert set(schema["required"]) == {"mission_id", "assignments", "generated_at"}
+    priority_schema = schema["$defs"]["MissionAssignment"]["properties"]["priority"]
+    assert priority_schema == {
+        "default": 1,
+        "description": "Execution priority from 1 (lowest) to 100 (highest).",
+        "maximum": 100,
+        "minimum": 1,
+        "title": "Priority",
+        "type": "integer",
+    }
 
 
 def test_drone_state_json_schema_requires_connection_status() -> None:
