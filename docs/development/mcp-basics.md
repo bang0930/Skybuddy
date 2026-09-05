@@ -1,9 +1,8 @@
 # MCP 기초 — 직접 실행하며 이해하기
 
 이 문서는 SkyBuddy orchestrator가 왜, 어떻게 MCP(Model Context Protocol)를 쓰는지
-처음 접하는 팀원을 위한 문서입니다. `sandbox/mcp-101/`에 있는 예제를 순서대로
-직접 실행하면서 읽는 걸 추천합니다 — 이 문서도 그렇게 한 단계씩 직접 만들어보면서
-정리한 내용입니다.
+정리한 문서입니다. `sandbox/mcp-101/`에 있는 예제를 순서대로 직접 실행하면서
+읽는 걸 추천합니다.
 
 ## MCP가 뭔가
 
@@ -154,3 +153,26 @@ follow_up = await client.aio.models.generate_content(
 `mock_drone_server.py`는 지금 middleware가 완성되기 전까지 그 자리를 임시로 대신하고
 있는 것입니다. 도구의 이름/스키마는 그대로 두고 내부 구현만 가짜 → 진짜로 바뀌는 구조라,
 orchestrator의 판단 로직은 나중에 거의 손댈 필요가 없습니다.
+
+## `mock_drone_server.py`가 지금 제공하는 도구
+
+`sandbox/mock-orchestrator/mock_drone_server.py`는 `drone_state` 딕셔너리 하나로
+드론 한 대의 상태를 흉내 내며, 다음 6개 도구를 노출합니다.
+
+| 도구 | 파라미터 | 하는 일 |
+|---|---|---|
+| `takeoff` | `altitude: float = 3.0` | 지정 고도까지 이륙 |
+| `land` | (없음) | 현재 위치에서 착륙 |
+| `move_to` | `latitude, longitude, altitude_m` | 지정 좌표로 이동 |
+| `rotate` | `degrees: float` | 기수 방향 회전 |
+| `return_home` | (없음) | 이륙 지점으로 복귀 |
+| `get_status` | (없음) | 현재 상태 조회 |
+
+`move_to`의 파라미터는 `services/middleware/app/schemas/mission.py`의 `GeoPosition`과
+같은 이름(`latitude`, `longitude`, `altitude_m`)을 씁니다. 이륙 지점 기준 상대 좌표가
+아니라 WGS84 기준 절대 좌표라는 뜻입니다.
+
+`move_to`는 아직 **저수준 도구**입니다 — LLM이 좌표를 직접 골라서 호출합니다. 이후
+`MissionAssignment`(drone_id + area_id)를 받아 내부에서 좌표 변환과 `move_to` 호출을
+대신 처리하는 고수준 도구(`assign_mission`)가 추가되면, `move_to`는 LLM이 직접 부르는
+도구 목록에서 빠지고 그 내부 구현으로 숨겨질 예정입니다.
