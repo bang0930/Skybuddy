@@ -55,3 +55,6 @@ pnpm-debug.log*
 # Local temporary files
 tmp/
 .tmp/
+
+# images and media
+assets
