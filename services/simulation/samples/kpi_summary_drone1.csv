@@ -1,0 +1,6 @@
+drone_id,waypoint,north_m,east_m,target_lat,target_lon,time_to_reach_s,straight_line_distance_m,path_distance_m,path_efficiency,reached,gps_degraded,vibration_z_max,clipping_max
+drone1,1,-10.0,-10.0,-35.363351,149.165087,10.97,14.14,11.2,0.998,True,False,0.049,0
+drone1,2,-10.0,10.0,-35.363351,149.165307,7.26,18.2,16.52,0.93,True,False,0.108,0
+drone1,3,10.0,10.0,-35.363171,149.165307,7.3,20.24,18.75,0.95,True,False,0.048,0
+drone1,4,10.0,-10.0,-35.363171,149.165087,7.03,20.63,18.71,0.956,True,False,0.052,0
+drone1,5,-10.0,-10.0,-35.363351,149.165087,7.0,20.73,18.86,0.952,True,False,0.051,0

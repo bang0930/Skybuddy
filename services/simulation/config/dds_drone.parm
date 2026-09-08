@@ -1,0 +1,14 @@
+# DDS 드론(ArduCopter 4.7.1) 전용 추가 파라미터.
+# sim_vehicle.py --add-param-file=~/skybuddy/config_reference/dds_drone.parm 로 적용한다.
+#
+# 왜 필요한가:
+#   AirSim 의 시뮬레이션 GPS 는 ArduPilot 의 prearm 검사를 통과하지 못한다.
+#   ("Vehicle is Not Armable" / "GPS 1: not healthy")
+#   새 인스턴스 디렉토리는 eeprom 이 비어 있어 기본값(검사 전부 수행)으로 뜨므로
+#   시동이 거부된다. 2026-09-07 이기종 구성 첫 시도에서 실제로 여기서 막혔다.
+#
+# ARMING_SKIPCHK 주의:
+#   4.7 에서 ARMING_CHECK 를 대체했고 의미가 반대다 - "건너뛸 검사"의 비트마스크다.
+#   -1 은 전 비트 = 모든 검사 생략. 4.5 의 ARMING_CHECK 0 과 같은 효과다.
+#   시뮬레이션 전용이며 실기체에서는 절대 이렇게 두면 안 된다.
+ARMING_SKIPCHK  -1

@@ -1,0 +1,9 @@
+# MAVLink 어댑터용
+pymavlink>=2.4.37
+
+# DDS 어댑터는 pip 로 설치하지 않는다.
+# ROS 2 Humble 을 설치하고 환경을 소싱하면 rclpy 가 함께 제공된다.
+#   sudo apt install ros-humble-ros-base ros-humble-geographic-msgs
+#   source /opt/ros/humble/setup.bash
+# 메시지 정의(ardupilot_msgs)는 ArduPilot 소스에서 colcon 으로 빌드한다.
+#   자세한 절차는 docs/engineering-notes.md 참고
