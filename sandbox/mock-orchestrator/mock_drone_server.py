@@ -57,6 +57,10 @@ def _new_state() -> dict:
         "longitude": 0.0,
         "altitude_m": 0.0,       # 고도. 양수 = 위로 올라간 높이
         "heading": 0.0,          # 0=북쪽 기준, 시계방향 각도
+        # move_to로 실제 이동한 지점을 순서대로 기록한다. return_home이
+        # 이 기록을 역순으로 재생해서, 나갈 때 지나온(=지형과 충돌하지
+        # 않는다고 이미 검증된) 경로 그대로 되짚어 돌아오게 한다.
+        "path_history": [],
     }
 
 
@@ -98,6 +102,7 @@ def _do_move_to(
     state["latitude"] = latitude
     state["longitude"] = longitude
     state["altitude_m"] = target_z
+    state["path_history"].append((latitude, longitude, target_z))
     _debug_state(f"move_to({drone_id})")
 
     return (
@@ -179,25 +184,44 @@ def rotate(degrees: float, drone_id: str = DEFAULT_DRONE_ID) -> str:
     return f"[MOCK] {drone_id} 드론이 {normalized}도 방향으로 회전했습니다."
 
 
-@mcp.tool()
-def return_home(drone_id: str = DEFAULT_DRONE_ID) -> str:
-    """드론을 이륙 지점(0,0)으로 복귀시킨 뒤 현재 고도를 유지한 채 대기시킵니다.
-
-    Args:
-        drone_id: 대상 드론 식별자. 생략하면 기본 드론(drone-1)에 적용됩니다.
-    """
+def _do_return_home(drone_id: str) -> str:
     state = _get_state(drone_id)
     if not state["airborne"]:
         return f"[{drone_id}] 드론이 이륙 상태가 아닙니다. 복귀할 필요가 없습니다."
 
-    state["latitude"] = 0.0
-    state["longitude"] = 0.0
+    # 나갈 때 지나온 좌표를 역순으로 그대로 되짚는다 — 그 경로는 이미
+    # 지형과 충돌 없이 지나온 게 검증된 경로라서, 새 직선 경로를 새로
+    # 계산하는 것보다 지형 충돌 위험이 낮다. (드론 간 충돌까지 막아주는
+    # 건 아니다 — 그건 _do_move_to의 수직분리 검증이 맡는 부분이다.)
+    retrace_points = list(reversed(state["path_history"]))
+    for lat, lon, alt in retrace_points:
+        _do_move_to(drone_id, lat, lon, alt)
+
+    # 마지막으로 실제 이륙 지점(0, 0)까지 마저 이동
+    _do_move_to(drone_id, 0.0, 0.0, state["altitude_m"])
+
+    # 복귀 완료 - 다음 임무를 위해 경로 기록 초기화
+    state["path_history"] = []
     _debug_state(f"return_home({drone_id})")
 
     return (
-        f"[MOCK] {drone_id} 드론이 홈 위치(0, 0)로 복귀했습니다 "
-        f"(고도 {state['altitude_m']}m 유지)."
+        f"[MOCK] {drone_id} 드론이 지나온 경로를 역순으로 되짚어 홈 위치(0, 0)로 "
+        f"복귀했습니다 (경유 지점 {len(retrace_points)}개, 고도 {state['altitude_m']}m 유지)."
     )
+
+
+@mcp.tool()
+def return_home(drone_id: str = DEFAULT_DRONE_ID) -> str:
+    """드론을 나갈 때 지나온 경로를 역순으로 되짚어 이륙 지점(0,0)으로
+    복귀시킨 뒤 현재 고도를 유지한 채 대기시킵니다.
+
+    직선으로 곧장 돌아가지 않고 지나온 경로를 그대로 되짚는 이유는, 그
+    경로가 이미 지형지물과 충돌 없이 지나온 것으로 검증됐기 때문입니다.
+
+    Args:
+        drone_id: 대상 드론 식별자. 생략하면 기본 드론(drone-1)에 적용됩니다.
+    """
+    return _do_return_home(drone_id)
 
 
 @mcp.tool()

@@ -92,5 +92,15 @@ async def main():
             )
             print("  결과:", r5.content[0].text)
 
+            print("--- return_home: 지나온 경로를 역순으로 되짚는지 확인 ---")
+            r6 = await session.call_tool("return_home", {"drone_id": "drone-1"})
+            print("  return_home:", r6.content[0].text)
+            r6_status = await session.call_tool("get_status", {"drone_id": "drone-1"})
+            print("  drone-1 최종 상태:", r6_status.content[0].text)
+            if "latitude=0.0" in r6_status.content[0].text and "longitude=0.0" in r6_status.content[0].text:
+                print("  ✅ 홈 위치(0, 0)로 정상 복귀했습니다.")
+            else:
+                print("  ❌ 홈 위치로 복귀하지 못했습니다.")
+
 
 asyncio.run(main())
