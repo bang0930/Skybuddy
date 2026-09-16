@@ -50,5 +50,47 @@ async def main():
             r3 = await session.call_tool("get_status", {})
             print("  get_status:", r3.content[0].text)
 
+            print("--- propose_mission_plan 스키마 확인 ---")
+            plan_schema = tools["propose_mission_plan"].inputSchema["properties"].keys()
+            print(" ", list(plan_schema))
+
+            print("--- propose_mission_plan: 정상 케이스 ---")
+            r4 = await session.call_tool(
+                "propose_mission_plan",
+                {
+                    "mission_id": "mission-001",
+                    "assignments": [
+                        {"drone_id": "drone-1", "area_id": "area-a", "priority": 80},
+                        {"drone_id": "drone-2", "area_id": "area-b", "priority": 80},
+                    ],
+                    "generated_at": "2026-09-06T10:00:00+09:00",
+                },
+            )
+            print("  결과:", r4.content[0].text)
+
+            print("--- propose_mission_plan(accepted) 이후 실제 실행 여부 확인 ---")
+            r4_drone1 = await session.call_tool("get_status", {"drone_id": "drone-1"})
+            r4_drone2 = await session.call_tool("get_status", {"drone_id": "drone-2"})
+            print("  drone-1:", r4_drone1.content[0].text)
+            print("  drone-2:", r4_drone2.content[0].text)
+            if "latitude=37.45" in r4_drone1.content[0].text and "latitude=37.46" in r4_drone2.content[0].text:
+                print("  ✅ 계획대로 drone-1은 area-a, drone-2는 area-b로 실제 이동했습니다.")
+            else:
+                print("  ❌ 계획이 accepted됐는데도 드론이 실제로 이동하지 않았습니다.")
+
+            print("--- propose_mission_plan: 중복 구역 배정(검증 실패) 케이스 ---")
+            r5 = await session.call_tool(
+                "propose_mission_plan",
+                {
+                    "mission_id": "mission-002",
+                    "assignments": [
+                        {"drone_id": "drone-1", "area_id": "area-a", "priority": 80},
+                        {"drone_id": "drone-2", "area_id": "area-a", "priority": 80},
+                    ],
+                    "generated_at": "2026-09-06T10:00:00+09:00",
+                },
+            )
+            print("  결과:", r5.content[0].text)
+
 
 asyncio.run(main())

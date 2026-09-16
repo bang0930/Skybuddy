@@ -40,11 +40,37 @@ class GeminiProvider(LLMProvider):
 
     async def decide(self, message: str, mcp_tools: list[McpTool]) -> Decision:
         gemini_tools = [_mcp_tool_to_gemini_tool(t) for t in mcp_tools]
-        user_content = types.Content(role="user", parts=[types.Part.from_text(text=message)])
+        contents = [types.Content(role="user", parts=[types.Part.from_text(text=message)])]
+        return await self._step(contents, gemini_tools)
 
+    async def continue_with_results(
+        self,
+        mcp_tools: list[McpTool],
+        decision: Decision,
+        tool_results: list[str],
+    ) -> Decision:
+        state = decision.provider_state
+        contents = state["contents"]
+        gemini_tools = state["gemini_tools"]
+
+        function_response_parts = [
+            types.Part.from_function_response(name=call.name, response={"result": result})
+            for call, result in zip(decision.tool_calls, tool_results)
+        ]
+        contents = [*contents, types.Content(role="user", parts=function_response_parts)]
+
+        return await self._step(contents, gemini_tools)
+
+    async def _step(self, contents: list[types.Content], gemini_tools: list[types.Tool]) -> Decision:
+        """한 번의 generate_content 호출과, 그 결과를 Decision으로 변환하는 공통 로직.
+
+        decide()와 continue_with_results()는 둘 다 "지금까지의 대화(contents)를
+        보고 다음 행동을 판단한다"는 점에서 동일하다 — 차이는 contents를 처음
+        만드는지, 직전 도구 결과를 이어붙이는지뿐이라 이 메서드로 통합했다.
+        """
         response = await self._client.aio.models.generate_content(
             model=_MODEL,
-            contents=[user_content],
+            contents=contents,
             config=types.GenerateContentConfig(
                 tools=gemini_tools, automatic_function_calling=_DISABLE_AFC
             ),
@@ -52,42 +78,17 @@ class GeminiProvider(LLMProvider):
 
         function_calls = response.function_calls
         if not function_calls:
-            return Decision(text=response.text)
+            # 텍스트 파트가 하나도 없으면 .text는 None을 리턴하므로 폴백한다.
+            return Decision(text=response.text or "")
 
+        model_content = response.candidates[0].content
         return Decision(
             text=None,
             tool_calls=[
                 ToolCall(name=call.name, args=dict(call.args or {})) for call in function_calls
             ],
             provider_state={
-                "user_content": user_content,
-                "model_content": response.candidates[0].content,
+                "contents": [*contents, model_content],
+                "gemini_tools": gemini_tools,
             },
         )
-
-    async def finalize(
-        self,
-        message: str,
-        mcp_tools: list[McpTool],
-        decision: Decision,
-        tool_results: list[str],
-    ) -> str:
-        state = decision.provider_state
-        function_response_parts = [
-            types.Part.from_function_response(name=call.name, response={"result": result})
-            for call, result in zip(decision.tool_calls, tool_results)
-        ]
-
-        # tools를 넘기지 않아 모델이 이 응답에서 또 다른 function_call을
-        # 만들 수 없게 막는다. finalize()는 이미 실행된 결과를 자연어로
-        # 요약하는 단계라 추가 도구 호출이 필요 없다.
-        follow_up = await self._client.aio.models.generate_content(
-            model=_MODEL,
-            contents=[
-                state["user_content"],
-                state["model_content"],
-                types.Content(role="user", parts=function_response_parts),
-            ],
-            config=types.GenerateContentConfig(automatic_function_calling=_DISABLE_AFC),
-        )
-        return follow_up.text
