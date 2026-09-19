@@ -109,16 +109,13 @@ def main():
 
     def run_one(d):
         drone_id = d["drone_id"]
+        # 구성 dict 의 키를 그대로 넘긴다. waypoints 를 넣으면 외부 주입 경로로,
+        # 안 넣으면 pattern 으로 내부 생성 경로로 동작한다.
+        # 둘을 같이 넣으면 run_mission 이 ValueError 로 막는다.
+        kwargs = {k: v for k, v in d.items() if k != "drone_id"}
+        kwargs.setdefault("protocol", "mavlink")
         try:
-            results[drone_id] = run_mission(
-                connection_string=d["connection_string"],
-                drone_id=drone_id,
-                zone_offset_north_m=d.get("zone_offset_north_m", 0),
-                zone_offset_east_m=d.get("zone_offset_east_m", 0),
-                target_alt=d.get("target_alt"),
-                pattern=d.get("pattern", "grid"),
-                reverse=d.get("reverse", False),
-                protocol=d.get("protocol", "mavlink"))
+            results[drone_id] = run_mission(drone_id=drone_id, **kwargs)
         except Exception as e:
             errors[drone_id] = e
             print(f"[{drone_id}] 미션 실패: {e}")

@@ -1,6 +1,6 @@
 """ROS 2(DDS)로 말하는 드론 어댑터.
 
-drone_link.py(MAVLink)와 완전히 동일한 인터페이스를 제공하므로,
+mavlink_drone.py(MAVLink)와 완전히 동일한 인터페이스를 제공하므로,
 kpi_mission.py 의 미션 로직은 어느 쪽이 붙었는지 알 필요가 없다.
 
 전제:
@@ -252,13 +252,19 @@ class Ros2Drone(DroneInterface):
         if not self._call(self._cli_takeoff, req, what="takeoff").status:
             raise RuntimeError("이륙 명령 거부됨")
 
-        # 목표 고도의 95% 도달까지 대기 (MAVLink 쪽 동작과 맞춤)
+        # 목표 고도의 95% 도달까지 대기. MavlinkDrone 과 완료 조건이 같아야 한다.
+        # 명령 수락 시점에 반환하면 호출 측이 아직 지상 근처인 기체에 goto() 를 보낸다.
         deadline = time.time() + max(60, altitude_m * 4)
+        last_alt = None
         while time.time() < deadline:
             t = self.get_telemetry(timeout=2)
-            if t is not None and t["relative_alt_m"] >= altitude_m * 0.95:
-                return True
-        raise RuntimeError(f"이륙 후 고도 도달 실패 (목표 {altitude_m}m)")
+            if t is None or t["relative_alt_m"] is None:
+                continue
+            last_alt = t["relative_alt_m"]
+            if last_alt >= altitude_m * 0.95:
+                return
+        raise RuntimeError(
+            f"이륙 후 고도 도달 실패 (목표 {altitude_m}m, 최종 {last_alt}m)")
 
     def goto(self, lat, lon, alt_m):
         msg = GlobalPosition()
@@ -328,7 +334,13 @@ class Ros2Drone(DroneInterface):
             return None
 
         pos = gp.pose.position
-        rel_alt = pos.altitude - (self._home_alt_amsl or pos.altitude)
+        # 홈 고도가 정확히 0.0m 인 경우가 있다(원점을 해수면에 맞춘 맵 등).
+        # `or` 로 판별하면 0.0 이 거짓이라 현재 고도가 선택되고 상대고도가 늘 0 이 된다.
+        # 고도는 0 도 정상값이므로 반드시 is not None 으로 판별한다.
+        home_alt = (self._home_alt_amsl
+                    if self._home_alt_amsl is not None
+                    else pos.altitude)
+        rel_alt = pos.altitude - home_alt
 
         # ENU -> NED. ROS(REP-103)는 x=동, y=북, z=위 / MAVLink 는 x=북, y=동, z=아래.
         if tw is not None:
@@ -336,7 +348,7 @@ class Ros2Drone(DroneInterface):
             vy = tw.twist.linear.x
             vz = -tw.twist.linear.z
         else:
-            vx = vy = vz = ""
+            vx = vy = vz = None
 
         # ENU yaw(동쪽 기준 반시계) -> 나침반 방위(진북 기준 시계)
         q = gp.pose.orientation
@@ -350,30 +362,30 @@ class Ros2Drone(DroneInterface):
             gps_fix_type = 3 if nav.status.status >= 0 else 1
             # 공분산에서 수평 정확도(m)를 뽑는다. MAVLink eph(cm/100=m)와 같은 단위.
             eph = (round(math.sqrt(max(nav.position_covariance[0], 0.0)), 2)
-                   if nav.position_covariance_type != 0 else "")
+                   if nav.position_covariance_type != 0 else None)
         else:
-            gps_fix_type = ""
-            eph = ""
+            gps_fix_type = None
+            eph = None
 
         return {
             "lat": pos.latitude,
             "lon": pos.longitude,
             "relative_alt_m": round(rel_alt, 3),
-            "vx": round(vx, 3) if vx != "" else "",
-            "vy": round(vy, 3) if vy != "" else "",
-            "vz": round(vz, 3) if vz != "" else "",
+            "vx": round(vx, 3) if vx is not None else None,
+            "vy": round(vy, 3) if vy is not None else None,
+            "vz": round(vz, 3) if vz is not None else None,
             "heading_deg": round(heading, 2),
             "gps_fix_type": gps_fix_type,
             # NavSatFix 에는 위성 수 필드가 없다. 프로토콜 간 기능 격차 - 숨기지 않는다.
-            "satellites_visible": "",
+            "satellites_visible": None,
             "gps_eph": eph,
-            "battery_voltage_v": round(bat.voltage, 2) if bat is not None else "",
-            "battery_remaining_pct": round(bat.percentage * 100, 1) if bat is not None else "",
+            "battery_voltage_v": round(bat.voltage, 2) if bat is not None else None,
+            "battery_remaining_pct": round(bat.percentage * 100, 1) if bat is not None else None,
             # AP_DDS 에는 진동/클리핑 토픽이 아예 없다. MAVLink 만 제공하는 지표.
-            "vibration_x": "",
-            "vibration_y": "",
-            "vibration_z": "",
-            "clipping": "",
+            "vibration_x": None,
+            "vibration_y": None,
+            "vibration_z": None,
+            "clipping": None,
             "timestamp": time.time(),
         }
 

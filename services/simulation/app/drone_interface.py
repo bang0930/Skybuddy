@@ -20,24 +20,58 @@
 """
 import math
 from abc import ABC, abstractmethod
+from typing import Optional, TypedDict
 
 
-# 공통 텔레메트리 스키마.
+class Telemetry(TypedDict):
+    """get_telemetry() 반환 타입. 미들웨어가 그대로 모델로 옮길 수 있는 형태다.
+
+    [값이 없을 때는 None 이다. 빈 문자열이 아니다.]
+    같은 필드가 상황에 따라 숫자와 문자열 두 타입을 갖지 않도록,
+    어댑터는 항상 숫자 아니면 None 을 반환한다.
+    빈 문자열로 바꾸는 것은 CSV 로 쓸 때뿐이며 telemetry_to_csv_row() 가 담당한다.
+
+    [필드는 항상 전부 존재한다.]
+    프로토콜이 제공하지 못하는 값도 키 자체는 있고 None 이 들어간다.
+    미들웨어가 키 존재 여부를 매번 확인하지 않아도 된다.
+    """
+    lat: Optional[float]                    # WGS-84 위도(도)
+    lon: Optional[float]                    # WGS-84 경도(도)
+    relative_alt_m: Optional[float]         # 홈(이륙 지점) 기준 상대 고도(m). AMSL 아님
+    vx: Optional[float]                     # NED 북쪽 속도(m/s)
+    vy: Optional[float]                     # NED 동쪽 속도(m/s)
+    vz: Optional[float]                     # NED 아래쪽 속도(m/s). 아래가 양수
+    heading_deg: Optional[float]            # 진북 기준 시계방향 0~360도
+    gps_fix_type: Optional[int]             # 3 = 3D Fix 이상이 정상
+    satellites_visible: Optional[int]       # 위성 수. AP_DDS 는 제공하지 않음
+    gps_eph: Optional[float]                # 수평 위치 정밀도(m)
+    battery_voltage_v: Optional[float]      # 전압(V)
+    battery_remaining_pct: Optional[float]  # 잔량(%)
+    vibration_x: Optional[float]            # 진동. AP_DDS 는 제공하지 않음
+    vibration_y: Optional[float]
+    vibration_z: Optional[float]
+    clipping: Optional[int]                 # 가속도계 포화 횟수. AP_DDS 는 제공하지 않음
+    timestamp: float                        # Unix epoch. 항상 값이 있다
+
+
+# 공통 텔레메트리 스키마. Telemetry TypedDict 의 키와 순서가 일치해야 한다.
 # 두 프로토콜이 같은 CSV 컬럼으로 떨어져야 나란히 비교할 수 있다.
-TELEMETRY_FIELDS = [
-    "lat", "lon", "relative_alt_m",
-    "vx", "vy", "vz",
-    "heading_deg",
-    "gps_fix_type", "satellites_visible", "gps_eph",
-    "battery_voltage_v", "battery_remaining_pct",
-    "vibration_x", "vibration_y", "vibration_z", "clipping",
-    "timestamp",
-]
+TELEMETRY_FIELDS = list(Telemetry.__annotations__.keys())
 
-# 프로토콜별로 제공하지 못하는 항목. 빈 문자열("")로 채운다.
+# 프로토콜별로 제공하지 못하는 항목. None 이 들어간다.
 # 이건 구현 부족이 아니라 프로토콜 간 실제 기능 격차이므로 숨기지 않고 기록한다.
+# 미들웨어는 이 필드들을 필수값으로 가정하면 안 된다.
 UNSUPPORTED_BY_DDS = ["vibration_x", "vibration_y", "vibration_z", "clipping",
                       "satellites_visible"]
+
+
+def telemetry_to_csv_row(t):
+    """Telemetry 를 CSV 한 줄로 직렬화한다. None 은 빈 칸으로 쓴다.
+
+    어댑터 반환값에서는 None 을 그대로 두고, 파일로 나갈 때만 빈 문자열이 된다.
+    이렇게 나눠야 미들웨어가 받는 값의 타입이 흔들리지 않는다.
+    """
+    return {k: ("" if v is None else v) for k, v in t.items()}
 
 
 class DroneInterface(ABC):
@@ -56,7 +90,15 @@ class DroneInterface(ABC):
 
     @abstractmethod
     def takeoff(self, altitude_m):
-        """시동 -> 이륙 -> 목표 고도 도달까지. 실패하면 예외."""
+        """시동 -> 이륙 -> **목표 고도 도달까지** 기다린 뒤 반환한다. 실패하면 예외.
+
+        [완료 조건은 두 구현이 같아야 한다]
+        명령이 수락된 시점이 아니라 고도가 실제로 올라온 시점에 반환해야 한다.
+        그렇지 않으면 호출 측이 아직 지상 근처에 있는 기체에 goto() 를 보내게 된다.
+        현재 두 구현 모두 목표 고도의 95% 도달을 완료 기준으로 쓴다.
+
+        성공 시 반환값은 없다. 실패는 예외로만 알린다.
+        """
 
     @abstractmethod
     def goto(self, lat, lon, alt_m):
@@ -72,10 +114,13 @@ class DroneInterface(ABC):
         """강제 시동 끄기(안전장치). 성공하면 True."""
 
     @abstractmethod
-    def get_telemetry(self, timeout=2):
-        """TELEMETRY_FIELDS 스키마의 dict 를 반환. 데이터가 없으면 None.
+    def get_telemetry(self, timeout=2) -> Optional[Telemetry]:
+        """Telemetry 를 반환. 데이터가 아직 없으면 None.
+
+        값이 없는 개별 필드도 None 이다(빈 문자열 아님).
         새 데이터가 올 때까지 짧게 블로킹한다 - 호출 측이 while 루프로 폴링하므로
-        논블로킹이면 CPU 를 다 먹는다."""
+        논블로킹이면 CPU 를 다 먹는다.
+        """
 
     @abstractmethod
     def close(self):

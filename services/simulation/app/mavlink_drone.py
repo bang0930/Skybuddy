@@ -142,6 +142,12 @@ class MavlinkDrone(DroneInterface):
              - position_ok() (EKF 위치 추정 확정)
            SITL 2기 + AirSim + DDS Agent + ROS 2가 CPU를 나눠 쓰면 스풀업이
            실제 시간으로 더 오래 걸려서, 한 번만 보내면 result=4(FAILED)로 거부된다.
+
+        5) 명령 수락 후에도 고도 도달까지 기다리는 이유
+           DroneInterface.takeoff() 의 계약은 "목표 고도 도달까지"다.
+           명령이 수락된 시점에 반환하면 아직 지상 근처에 있는 기체에 호출 측이
+           goto() 를 보내게 되어, 프로토콜마다 takeoff() 의 의미가 달라진다.
+           Ros2Drone 과 동일하게 목표 고도의 95% 도달을 완료 기준으로 쓴다.
         """
         self.set_mode('STABILIZE')
         if not self.arm():
@@ -156,6 +162,7 @@ class MavlinkDrone(DroneInterface):
 
         deadline = time.time() + 20
         last_result = None
+        accepted = False
         while time.time() < deadline:
             self.master.mav.command_long_send(
                 self.master.target_system, self.master.target_component,
@@ -164,15 +171,32 @@ class MavlinkDrone(DroneInterface):
             )
             ack = self.master.recv_match(type='COMMAND_ACK', blocking=True, timeout=3)
             if ack is not None and ack.result == 0:
-                return
+                accepted = True
+                break
             last_result = ack.result if ack is not None else 'no ACK'
             time.sleep(1.0)
 
-        reason = None
-        status = self.master.recv_match(type='STATUSTEXT', blocking=True, timeout=1)
-        if status is not None:
-            reason = status.text
-        raise RuntimeError(f"NAV_TAKEOFF 실패 (20초 재시도, result={last_result}, reason={reason})")
+        if not accepted:
+            reason = None
+            status = self.master.recv_match(type='STATUSTEXT', blocking=True, timeout=1)
+            if status is not None:
+                reason = status.text
+            raise RuntimeError(
+                f"NAV_TAKEOFF 실패 (20초 재시도, result={last_result}, reason={reason})")
+
+        # 명령이 수락됐을 뿐 아직 지상이다. 고도가 실제로 올라올 때까지 기다린다.
+        # 타임아웃은 고도에 비례시킨다 - 고정값이면 높은 고도에서 다 오르기 전에 끊긴다.
+        reach_deadline = time.time() + max(60, altitude_m * 4)
+        last_alt = None
+        while time.time() < reach_deadline:
+            t = self.get_telemetry(timeout=2)
+            if t is None or t["relative_alt_m"] is None:
+                continue
+            last_alt = t["relative_alt_m"]
+            if last_alt >= altitude_m * 0.95:
+                return
+        raise RuntimeError(
+            f"이륙 후 고도 도달 실패 (목표 {altitude_m}m, 최종 {last_alt}m)")
 
     def goto(self, lat, lon, alt_m):
         """목표 지점을 지정하고 즉시 리턴한다 (fire-and-forget).
@@ -250,7 +274,9 @@ class MavlinkDrone(DroneInterface):
         스트림이다. 매번 새로 도착하지 않아도 pymavlink가 마지막 값을 캐시해두므로
         master.messages에서 꺼내 쓴다.
 
-        빈 문자열("")은 "이번엔 값이 없다"는 뜻이다. 필드 자체는 항상 존재한다.
+        값이 없는 필드는 None 이다(빈 문자열 아님). 필드 자체는 항상 존재한다.
+        CSV 로 쓸 때만 빈 칸이 되며, 그 변환은 drone_interface.telemetry_to_csv_row()
+        가 담당한다.
         """
         msg = self.master.recv_match(type='GLOBAL_POSITION_INT', blocking=True, timeout=timeout)
         if msg is None:
@@ -270,21 +296,17 @@ class MavlinkDrone(DroneInterface):
             "vx": msg.vx / 100.0,
             "vy": msg.vy / 100.0,
             "vz": msg.vz / 100.0,
-            "heading_deg": (msg.hdg / 100.0) if msg.hdg != 65535 else "",   # 65535 = 값 없음
-            "gps_fix_type": gps.fix_type if gps else "",
-            "satellites_visible": gps.satellites_visible if gps else "",
-            "gps_eph": (gps.eph / 100.0) if gps else "",
+            "heading_deg": (msg.hdg / 100.0) if msg.hdg != 65535 else None,  # 65535 = 값 없음
+            "gps_fix_type": gps.fix_type if gps else None,
+            "satellites_visible": gps.satellites_visible if gps else None,
+            "gps_eph": (gps.eph / 100.0) if gps else None,
             "battery_voltage_v": (sys_status.voltage_battery / 1000.0)
-                if sys_status and sys_status.voltage_battery != 65535 else "",
+                if sys_status and sys_status.voltage_battery != 65535 else None,
             "battery_remaining_pct": sys_status.battery_remaining
-                if sys_status and sys_status.battery_remaining != -1 else "",
-            "vibration_x": round(vib.vibration_x, 3) if vib else "",
-            "vibration_y": round(vib.vibration_y, 3) if vib else "",
-            "vibration_z": round(vib.vibration_z, 3) if vib else "",
-            "clipping": (vib.clipping_0 + vib.clipping_1 + vib.clipping_2) if vib else "",
+                if sys_status and sys_status.battery_remaining != -1 else None,
+            "vibration_x": round(vib.vibration_x, 3) if vib else None,
+            "vibration_y": round(vib.vibration_y, 3) if vib else None,
+            "vibration_z": round(vib.vibration_z, 3) if vib else None,
+            "clipping": (vib.clipping_0 + vib.clipping_1 + vib.clipping_2) if vib else None,
             "timestamp": time.time(),
         }
-
-
-# 이전 이름. 파일명이 drone_link.py였을 때의 클래스 이름을 쓰는 코드를 위해 남겨둔다.
-DroneLink = MavlinkDrone
