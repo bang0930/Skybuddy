@@ -58,3 +58,6 @@ tmp/
 
 # images and media
 assets
+
+# Agnet
+AGENTS.md
