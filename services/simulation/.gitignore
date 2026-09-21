@@ -1,0 +1,10 @@
+# 실행 결과물 - 돌릴 때마다 바뀌므로 추적하지 않는다.
+kpi_log_*.csv
+kpi_summary_*.csv
+logs/
+__pycache__/
+*.pyc
+
+# 단, samples/ 안의 것은 참고용으로 일부러 커밋한다.
+# 위 패턴은 하위 폴더까지 걸리므로 예외를 명시해야 한다.
+!samples/*.csv
