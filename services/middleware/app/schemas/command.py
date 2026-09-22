@@ -182,6 +182,7 @@ _ALLOWED_STATUS_TRANSITIONS: dict[CommandStatus, set[CommandStatus]] = {
         CommandStatus.SUCCEEDED,
         CommandStatus.FAILED,
         CommandStatus.TIMED_OUT,
+        CommandStatus.UNSUPPORTED,
     },
     CommandStatus.ACCEPTED: {
         CommandStatus.EXECUTING,
