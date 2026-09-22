@@ -1,5 +1,6 @@
 """Core contracts exchanged by the orchestrator, middleware, and simulator."""
 
+from collections.abc import Hashable, Sequence
 from datetime import datetime
 from enum import Enum
 from typing import Annotated, Self
@@ -37,10 +38,91 @@ class GeoCoordinate(ContractModel):
     longitude: float = Field(ge=-180, le=180)
 
 
+class AltitudeReference(str, Enum):
+    """Reference datum used to interpret an altitude value."""
+
+    MSL = "msl"
+    HOME_RELATIVE = "home_relative"
+
+
 class GeoPosition(GeoCoordinate):
-    """A drone position with altitude above mean sea level."""
+    """A drone position whose altitude datum is explicit."""
 
     altitude_m: float = Field(ge=-500, le=10_000)
+    altitude_reference: AltitudeReference
+
+
+class ProtocolType(str, Enum):
+    """Supported vehicle communication protocols."""
+
+    MAVLINK = "mavlink"
+    AP_DDS = "ap_dds"
+
+
+class DroneCommandType(str, Enum):
+    """Protocol-neutral commands understood by the middleware."""
+
+    TAKEOFF = "takeoff"
+    GOTO = "goto"
+    LAND = "land"
+    RETURN_HOME = "return_home"
+    DISARM = "disarm"
+
+
+class TelemetryField(str, Enum):
+    """Optional telemetry groups a protocol may provide."""
+
+    POSITION = "position"
+    VELOCITY_NED = "velocity_ned"
+    HEADING = "heading"
+    GPS_FIX_TYPE = "gps_fix_type"
+    SATELLITES_VISIBLE = "satellites_visible"
+    GPS_EPH = "gps_eph"
+    BATTERY_VOLTAGE = "battery_voltage"
+    BATTERY_PERCENT = "battery_percent"
+    VIBRATION = "vibration"
+    CLIPPING = "clipping"
+
+
+class TelemetryAvailability(str, Enum):
+    """Why a normalized telemetry value is present or absent."""
+
+    AVAILABLE = "available"
+    TEMPORARILY_UNAVAILABLE = "temporarily_unavailable"
+    UNSUPPORTED = "unsupported"
+
+
+class DroneCapabilities(ContractModel):
+    """Commands and telemetry groups supported by one drone adapter."""
+
+    commands: list[DroneCommandType] = Field(min_length=1)
+    telemetry_fields: list[TelemetryField] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def capabilities_must_be_unique(self) -> Self:
+        """Reject duplicated capability entries at the service boundary."""
+        _require_unique(self.commands, "commands must contain unique values")
+        _require_unique(
+            self.telemetry_fields,
+            "telemetry_fields must contain unique values",
+        )
+        return self
+
+
+class NedVelocity(ContractModel):
+    """Velocity in the North-East-Down frame, measured in metres per second."""
+
+    north_m_s: float
+    east_m_s: float
+    down_m_s: float
+
+
+class Vibration(ContractModel):
+    """Protocol-reported vibration values on the vehicle axes."""
+
+    x: float
+    y: float
+    z: float
 
 
 class DroneStatus(str, Enum):
@@ -63,8 +145,18 @@ class DroneState(ContractModel):
     """Normalized state reported for one drone."""
 
     drone_id: Identifier
-    position: GeoPosition
-    battery_percent: float = Field(ge=0, le=100)
+    protocol: ProtocolType
+    capabilities: DroneCapabilities
+    position: GeoPosition | None = None
+    velocity_ned_m_s: NedVelocity | None = None
+    heading_deg: float | None = Field(default=None, ge=0, lt=360)
+    gps_fix_type: int | None = Field(default=None, ge=0, le=8)
+    satellites_visible: int | None = Field(default=None, ge=0)
+    gps_eph_m: float | None = Field(default=None, ge=0)
+    battery_voltage_v: float | None = Field(default=None, ge=0)
+    battery_percent: float | None = Field(default=None, ge=0, le=100)
+    vibration: Vibration | None = None
+    clipping_count: int | None = Field(default=None, ge=0)
     status: DroneStatus
     connection_status: ConnectionStatus
     observed_at: datetime
@@ -77,6 +169,29 @@ class DroneState(ContractModel):
             raise ValueError("observed_at must include a timezone offset")
         return value
 
+    @model_validator(mode="after")
+    def populated_telemetry_must_be_supported(self) -> Self:
+        """Do not accept values that the adapter says it cannot provide."""
+        supported = set(self.capabilities.telemetry_fields)
+        for telemetry_field, attribute in _TELEMETRY_ATTRIBUTES.items():
+            if getattr(self, attribute) is not None and telemetry_field not in supported:
+                raise ValueError(
+                    f"{attribute} is populated but {telemetry_field.value} is not "
+                    "declared in capabilities"
+                )
+        return self
+
+    def telemetry_availability(
+        self, telemetry_field: TelemetryField
+    ) -> TelemetryAvailability:
+        """Distinguish unsupported telemetry from a temporary missing sample."""
+        if telemetry_field not in self.capabilities.telemetry_fields:
+            return TelemetryAvailability.UNSUPPORTED
+        attribute = _TELEMETRY_ATTRIBUTES[telemetry_field]
+        if getattr(self, attribute) is None:
+            return TelemetryAvailability.TEMPORARILY_UNAVAILABLE
+        return TelemetryAvailability.AVAILABLE
+
 
 class SearchArea(ContractModel):
     """Polygonal search area assigned as one indivisible unit."""
@@ -84,6 +199,7 @@ class SearchArea(ContractModel):
     area_id: Identifier
     boundary: list[GeoCoordinate] = Field(min_length=3, max_length=100)
     search_altitude_m: float = Field(gt=0, le=500)
+    search_altitude_reference: AltitudeReference
 
     @field_validator("boundary")
     @classmethod
@@ -179,7 +295,21 @@ class MissionPlan(ContractModel):
         return self
 
 
-def _require_unique(values: list[str], message: str) -> None:
+def _require_unique(values: Sequence[Hashable], message: str) -> None:
     """Raise a validation error when a contract identifier is duplicated."""
     if len(values) != len(set(values)):
         raise ValueError(message)
+
+
+_TELEMETRY_ATTRIBUTES: dict[TelemetryField, str] = {
+    TelemetryField.POSITION: "position",
+    TelemetryField.VELOCITY_NED: "velocity_ned_m_s",
+    TelemetryField.HEADING: "heading_deg",
+    TelemetryField.GPS_FIX_TYPE: "gps_fix_type",
+    TelemetryField.SATELLITES_VISIBLE: "satellites_visible",
+    TelemetryField.GPS_EPH: "gps_eph_m",
+    TelemetryField.BATTERY_VOLTAGE: "battery_voltage_v",
+    TelemetryField.BATTERY_PERCENT: "battery_percent",
+    TelemetryField.VIBRATION: "vibration",
+    TelemetryField.CLIPPING: "clipping_count",
+}

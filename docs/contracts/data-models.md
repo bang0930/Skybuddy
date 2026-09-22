@@ -6,7 +6,8 @@
 ## 계약 원칙
 
 - 모든 식별자는 영문자 또는 숫자로 시작하며 영문자, 숫자, `_`, `-`만 사용합니다.
-- 좌표는 WGS84 십진수 위도·경도를 사용하고 고도 단위는 미터입니다.
+- 좌표는 WGS84 십진수 위도·경도를 사용하고 고도 단위는 미터입니다. 모든 위치의
+  고도에는 `msl` 또는 `home_relative` 기준을 함께 기록합니다.
 - 배터리는 `0`부터 `100`까지의 백분율입니다.
 - 시각은 UTC 오프셋을 포함한 ISO 8601 형식이어야 합니다.
 - 정의하지 않은 필드는 계약 오류로 거부합니다.
@@ -24,12 +25,37 @@
   "drones": [
     {
       "drone_id": "drone-01",
+      "protocol": "mavlink",
+      "capabilities": {
+        "commands": ["takeoff", "goto", "land", "return_home", "disarm"],
+        "telemetry_fields": [
+          "position",
+          "velocity_ned",
+          "heading",
+          "gps_fix_type",
+          "satellites_visible",
+          "gps_eph",
+          "battery_voltage",
+          "battery_percent",
+          "vibration",
+          "clipping"
+        ]
+      },
       "position": {
         "latitude": 37.45,
         "longitude": 127.12,
-        "altitude_m": 220
+        "altitude_m": 220,
+        "altitude_reference": "msl"
       },
+      "velocity_ned_m_s": null,
+      "heading_deg": null,
+      "gps_fix_type": null,
+      "satellites_visible": null,
+      "gps_eph_m": null,
+      "battery_voltage_v": null,
       "battery_percent": 82.5,
+      "vibration": null,
+      "clipping_count": null,
       "status": "available",
       "connection_status": "connected",
       "observed_at": "2026-08-31T12:00:00Z"
@@ -43,7 +69,8 @@
         {"latitude": 37.46, "longitude": 127.12},
         {"latitude": 37.45, "longitude": 127.13}
       ],
-      "search_altitude_m": 80
+      "search_altitude_m": 80,
+      "search_altitude_reference": "home_relative"
     }
   ],
   "requested_at": "2026-08-31T12:00:00Z"
@@ -69,6 +96,20 @@
 통신이 끊긴 드론도 마지막으로 확인된 운용 상태는 유지합니다. 예를 들어 임무 수행 중 통신이
 끊기면 `status`는 `assigned`, `connection_status`는 `disconnected`로 표현합니다. 이를 통해
 고장이 확인된 `unavailable` 상태와 일시적인 통신 두절에 서로 다른 Fallback을 적용할 수 있습니다.
+
+### 선택적 텔레메트리와 지원 여부
+
+선택적 텔레메트리는 값이 없을 때 빈 문자열 대신 JSON `null`을 사용합니다. `null`만으로는
+일시적인 데이터 누락과 프로토콜 미지원을 구분할 수 없으므로 `capabilities.telemetry_fields`를
+함께 확인합니다.
+
+- 필드가 capabilities에 있고 값도 있음: `available`
+- 필드가 capabilities에 있지만 값이 `null`: `temporarily_unavailable`
+- 필드가 capabilities에 없음: `unsupported`
+
+예를 들어 AP_DDS가 `satellites_visible`을 지원하지 않으면 해당 값을 `null`로 두고
+`telemetry_fields`에도 포함하지 않습니다. MAVLink가 이 필드를 지원하지만 이번 표본에서 값이
+도착하지 않았다면 `telemetry_fields`에는 포함하고 값만 `null`로 둡니다.
 
 ## Mission Plan
 
@@ -108,6 +149,8 @@
 PYTHONPATH=services/middleware python -c \
   'import json; from app.schemas import MissionPlan; print(json.dumps(MissionPlan.model_json_schema(), indent=2))'
 ```
+
+명령·결과 및 API 초안은 [명령 및 API 계약](command-api.md)을 참고합니다.
 
 ## 아직 포함하지 않은 검증
 

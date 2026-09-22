@@ -6,7 +6,10 @@ import pytest
 from pydantic import ValidationError
 
 from app.schemas import (
+    AltitudeReference,
     ConnectionStatus,
+    DroneCapabilities,
+    DroneCommandType,
     DroneState,
     DroneStatus,
     GeoCoordinate,
@@ -14,10 +17,35 @@ from app.schemas import (
     MissionAssignment,
     MissionContext,
     MissionPlan,
+    ProtocolType,
     SearchArea,
+    TelemetryAvailability,
+    TelemetryField,
 )
 
 NOW = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+
+MAVLINK_CAPABILITIES = DroneCapabilities(
+    commands=[
+        DroneCommandType.TAKEOFF,
+        DroneCommandType.GOTO,
+        DroneCommandType.LAND,
+    ],
+    telemetry_fields=[
+        TelemetryField.POSITION,
+        TelemetryField.BATTERY_PERCENT,
+        TelemetryField.SATELLITES_VISIBLE,
+    ],
+)
+
+
+def make_position() -> GeoPosition:
+    return GeoPosition(
+        latitude=37.45,
+        longitude=127.12,
+        altitude_m=220,
+        altitude_reference=AltitudeReference.MSL,
+    )
 
 
 def make_drone(
@@ -29,7 +57,9 @@ def make_drone(
     """Build a valid drone state for focused validation tests."""
     return DroneState(
         drone_id=drone_id,
-        position=GeoPosition(latitude=37.45, longitude=127.12, altitude_m=220),
+        protocol=ProtocolType.MAVLINK,
+        capabilities=MAVLINK_CAPABILITIES,
+        position=make_position(),
         battery_percent=82.5,
         status=status,
         connection_status=connection_status,
@@ -47,6 +77,7 @@ def make_area(area_id: str = "area-a") -> SearchArea:
             GeoCoordinate(latitude=37.45, longitude=127.13),
         ],
         search_altitude_m=80,
+        search_altitude_reference=AltitudeReference.HOME_RELATIVE,
     )
 
 
@@ -81,7 +112,9 @@ def test_drone_rejects_battery_outside_percentage_range(
     with pytest.raises(ValidationError, match="battery_percent"):
         DroneState(
             drone_id="drone-01",
-            position=GeoPosition(latitude=37.45, longitude=127.12, altitude_m=220),
+            protocol=ProtocolType.MAVLINK,
+            capabilities=MAVLINK_CAPABILITIES,
+            position=make_position(),
             battery_percent=battery_percent,
             status=DroneStatus.AVAILABLE,
             connection_status=ConnectionStatus.CONNECTED,
@@ -91,7 +124,17 @@ def test_drone_rejects_battery_outside_percentage_range(
 
 def test_drone_rejects_out_of_range_coordinate() -> None:
     with pytest.raises(ValidationError, match="latitude"):
-        GeoPosition(latitude=91, longitude=127.12, altitude_m=220)
+        GeoPosition(
+            latitude=91,
+            longitude=127.12,
+            altitude_m=220,
+            altitude_reference=AltitudeReference.MSL,
+        )
+
+
+def test_position_requires_explicit_altitude_reference() -> None:
+    with pytest.raises(ValidationError, match="altitude_reference"):
+        GeoPosition(latitude=37.45, longitude=127.12, altitude_m=220)
 
 
 def test_contract_rejects_unknown_fields() -> None:
@@ -114,6 +157,39 @@ def test_timestamp_requires_timezone() -> None:
         )
 
 
+def test_drone_distinguishes_unsupported_and_temporarily_missing_telemetry() -> None:
+    drone = make_drone()
+
+    assert (
+        drone.telemetry_availability(TelemetryField.SATELLITES_VISIBLE)
+        == TelemetryAvailability.TEMPORARILY_UNAVAILABLE
+    )
+    assert (
+        drone.telemetry_availability(TelemetryField.VIBRATION)
+        == TelemetryAvailability.UNSUPPORTED
+    )
+    assert (
+        drone.telemetry_availability(TelemetryField.POSITION)
+        == TelemetryAvailability.AVAILABLE
+    )
+
+
+def test_drone_rejects_telemetry_not_declared_in_capabilities() -> None:
+    with pytest.raises(ValidationError, match="heading is not declared"):
+        DroneState(
+            **make_drone().model_dump(exclude={"heading_deg"}),
+            heading_deg=90,
+        )
+
+
+def test_capabilities_reject_duplicate_values() -> None:
+    with pytest.raises(ValidationError, match="commands must contain unique"):
+        DroneCapabilities(
+            commands=[DroneCommandType.GOTO, DroneCommandType.GOTO],
+            telemetry_fields=[TelemetryField.POSITION],
+        )
+
+
 def test_search_area_requires_three_distinct_points() -> None:
     point = GeoCoordinate(latitude=37.45, longitude=127.12)
 
@@ -122,6 +198,7 @@ def test_search_area_requires_three_distinct_points() -> None:
             area_id="area-a",
             boundary=[point, point, point],
             search_altitude_m=80,
+            search_altitude_reference=AltitudeReference.HOME_RELATIVE,
         )
 
 
@@ -187,6 +264,8 @@ def test_drone_state_json_schema_requires_connection_status() -> None:
     schema = DroneState.model_json_schema()
 
     assert "connection_status" in schema["required"]
+    assert "protocol" in schema["required"]
+    assert "capabilities" in schema["required"]
     assert schema["$defs"]["ConnectionStatus"]["enum"] == [
         "connected",
         "disconnected",
