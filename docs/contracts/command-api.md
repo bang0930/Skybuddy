@@ -129,3 +129,7 @@ PYTHONPATH=services/middleware python -c \
 
 생성된 Schema는 Pydantic 모델을 원본으로 취급하며 별도의 수동 JSON Schema를 중복 관리하지
 않습니다.
+
+## 프로토콜 Adapter 계약
+
+- [AP_DDS 상태 및 명령 변환](./ap-dds-adapter.md)
