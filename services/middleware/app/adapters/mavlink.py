@@ -6,7 +6,7 @@ can invoke that client through the small protocol defined here.
 """
 
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import IntEnum
 from math import isfinite
 from typing import Any, Protocol, Self
@@ -18,20 +18,18 @@ from app.schemas import (
     CommandError,
     CommandResult,
     CommandStatus,
-    ConnectionStatus,
     DroneCapabilities,
     DroneCommand,
     DroneCommandType,
     DroneState,
     DroneStatus,
-    GeoPosition,
-    NedVelocity,
     ProtocolType,
     TakeoffPayload,
     TelemetryField,
-    Vibration,
 )
 from app.schemas.mission import ContractModel, Identifier
+
+from .telemetry import TelemetryStateMapper
 
 MAV_CMD_NAV_TAKEOFF = 22
 
@@ -55,12 +53,19 @@ class MavlinkDroneBinding(ContractModel):
 
 
 class MavlinkStateMapper:
-    """Convert the simulation adapter telemetry dictionary into ``DroneState``."""
+    """Convert the simulation adapter telemetry dictionary into ``DroneState``.
+
+    MAVLink-specific checks (SYSID binding, Heartbeat age) happen here; the field mapping
+    itself is shared with other protocols through ``TelemetryStateMapper``.
+    """
 
     def __init__(self, *, heartbeat_timeout_s: float = 3.0) -> None:
         if not isfinite(heartbeat_timeout_s) or heartbeat_timeout_s <= 0:
             raise ValueError("heartbeat_timeout_s must be a positive finite number")
         self.heartbeat_timeout_s = heartbeat_timeout_s
+        self._telemetry_mapper = TelemetryStateMapper(
+            telemetry_timeout_s=heartbeat_timeout_s
+        )
 
     def map(
         self,
@@ -84,78 +89,14 @@ class MavlinkStateMapper:
                 f"{binding.drone_id} (expected {binding.system_id})"
             )
 
-        timestamp = _required_float(telemetry, "timestamp")
-        if timestamp < 0:
-            raise ValueError("timestamp must be a non-negative Unix timestamp")
-        observed_at = datetime.fromtimestamp(timestamp, tz=timezone.utc)
-        connection_status = self._connection_status(heartbeat_age_s)
-
-        latitude = _optional_float(telemetry, "lat")
-        longitude = _optional_float(telemetry, "lon")
-        relative_altitude = _optional_float(telemetry, "relative_alt_m")
-        position = None
-        if all(value is not None for value in (latitude, longitude, relative_altitude)):
-            position = GeoPosition(
-                latitude=latitude,
-                longitude=longitude,
-                altitude_m=relative_altitude,
-                altitude_reference=AltitudeReference.HOME_RELATIVE,
-            )
-
-        north_velocity = _optional_float(telemetry, "vx")
-        east_velocity = _optional_float(telemetry, "vy")
-        down_velocity = _optional_float(telemetry, "vz")
-        velocity = None
-        if all(
-            value is not None
-            for value in (north_velocity, east_velocity, down_velocity)
-        ):
-            velocity = NedVelocity(
-                north_m_s=north_velocity,
-                east_m_s=east_velocity,
-                down_m_s=down_velocity,
-            )
-
-        vibration_x = _optional_float(telemetry, "vibration_x")
-        vibration_y = _optional_float(telemetry, "vibration_y")
-        vibration_z = _optional_float(telemetry, "vibration_z")
-        vibration = None
-        if all(
-            value is not None for value in (vibration_x, vibration_y, vibration_z)
-        ):
-            vibration = Vibration(x=vibration_x, y=vibration_y, z=vibration_z)
-
-        return DroneState(
+        return self._telemetry_mapper.map(
+            telemetry,
             drone_id=binding.drone_id,
             protocol=ProtocolType.MAVLINK,
             capabilities=MAVLINK_CAPABILITIES,
-            position=position,
-            velocity_ned_m_s=velocity,
-            heading_deg=_optional_float(telemetry, "heading_deg"),
-            gps_fix_type=_optional_int(telemetry, "gps_fix_type"),
-            satellites_visible=_optional_int(telemetry, "satellites_visible"),
-            gps_eph_m=_optional_float(telemetry, "gps_eph"),
-            battery_voltage_v=_optional_float(telemetry, "battery_voltage_v"),
-            battery_percent=_optional_float(telemetry, "battery_remaining_pct"),
-            vibration=vibration,
-            clipping_count=_optional_int(telemetry, "clipping"),
             status=status,
-            connection_status=connection_status,
-            observed_at=observed_at,
+            telemetry_age_s=heartbeat_age_s,
         )
-
-    def _connection_status(self, heartbeat_age_s: float | None) -> ConnectionStatus:
-        if heartbeat_age_s is None:
-            return ConnectionStatus.DISCONNECTED
-        if isinstance(heartbeat_age_s, bool) or not isinstance(
-            heartbeat_age_s, (int, float)
-        ):
-            raise ValueError("heartbeat_age_s must be numeric or None")
-        if not isfinite(heartbeat_age_s) or heartbeat_age_s < 0:
-            raise ValueError("heartbeat_age_s must be a non-negative finite number")
-        if heartbeat_age_s <= self.heartbeat_timeout_s:
-            return ConnectionStatus.CONNECTED
-        return ConnectionStatus.DISCONNECTED
 
 
 class MavlinkTakeoffClient(Protocol):
@@ -325,33 +266,3 @@ class MavlinkCommandLifecycle:
         )
         self.status = status
         return result
-
-
-def _required_float(values: Mapping[str, Any], key: str) -> float:
-    value = _optional_float(values, key)
-    if value is None:
-        raise ValueError(f"{key} is required")
-    return value
-
-
-def _optional_float(values: Mapping[str, Any], key: str) -> float | None:
-    value = values.get(key)
-    if value is None or value == "":
-        return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{key} must be numeric, None, or an empty string")
-    normalized = float(value)
-    if not isfinite(normalized):
-        raise ValueError(f"{key} must be finite")
-    return normalized
-
-
-def _optional_int(values: Mapping[str, Any], key: str) -> int | None:
-    value = values.get(key)
-    if value is None or value == "":
-        return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{key} must be an integer, None, or an empty string")
-    if not isfinite(value) or int(value) != value:
-        raise ValueError(f"{key} must be an integer")
-    return int(value)
