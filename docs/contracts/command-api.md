@@ -132,7 +132,10 @@ PYTHONPATH=services/middleware python -c \
 
 ## 프로토콜 Adapter 계약
 
-- [AP_DDS 상태 및 명령 변환](./ap-dds-adapter.md)
 프로토콜별 변환 규칙은 다음 문서를 참고합니다.
 
 - [MAVLink 미들웨어 변환 계약](mavlink-adapter.md)
+- [AP_DDS 상태 및 명령 변환](./ap-dds-adapter.md)
+
+MCP 도구와 명령 실행 경로는 [미들웨어 MCP 서버 및 임무 실행 파이프라인](mcp-tools.md)을
+참고합니다.

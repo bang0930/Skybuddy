@@ -154,9 +154,8 @@ PYTHONPATH=services/middleware python -c \
 
 ## 아직 포함하지 않은 검증
 
-- Mission Plan의 식별자가 해당 Mission Context에 실제로 존재하는지 확인하는 교차 검증
 - 배터리 임계값에 따른 할당 거부 및 복귀 처리
-- 탐색 구역을 MAVLink waypoint 또는 AirSim 명령으로 변환하는 규칙
 - 통신 지연과 드론 이탈에 대한 Fallback 및 재할당 정책
 
-위 항목은 이 계약을 입력으로 사용하는 API Gateway와 명령 변환 작업에서 단계적으로 추가합니다.
+Mission Plan 식별자의 교차 검증과 탐색 구역 → 명령 변환(MVP 임시 규칙)은
+[미들웨어 MCP 서버 및 임무 실행 파이프라인](mcp-tools.md)에서 다룹니다.
