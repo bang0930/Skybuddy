@@ -129,3 +129,7 @@ PYTHONPATH=services/middleware python -c \
 
 생성된 Schema는 Pydantic 모델을 원본으로 취급하며 별도의 수동 JSON Schema를 중복 관리하지
 않습니다.
+
+프로토콜별 변환 규칙은 다음 문서를 참고합니다.
+
+- [MAVLink 미들웨어 변환 계약](mavlink-adapter.md)
