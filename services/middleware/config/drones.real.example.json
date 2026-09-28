@@ -1,0 +1,18 @@
+{
+  "telemetry_timeout_s": 3.0,
+  "simulation_app_path": null,
+  "drones": [
+    {
+      "drone_id": "drone-01",
+      "protocol": "mavlink",
+      "mode": "real",
+      "connection_string": "udpin:127.0.0.1:14561"
+    },
+    {
+      "drone_id": "drone-02",
+      "protocol": "ap_dds",
+      "mode": "real",
+      "connection_string": "ros2:ap"
+    }
+  ]
+}
