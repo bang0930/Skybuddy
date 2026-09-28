@@ -92,5 +92,53 @@ async def main():
             )
             print("  결과:", r5.content[0].text)
 
+            print("--- split_search_area: L자 구역(area-c)을 2조각으로 분할 ---")
+            r7 = await session.call_tool(
+                "split_search_area", {"area_id": "area-c", "n_pieces": 2}
+            )
+            print("  결과:", r7.content[0].text)
+
+            print("--- split_search_area가 만든 area_id로 propose_mission_plan 실행 ---")
+            r8 = await session.call_tool(
+                "propose_mission_plan",
+                {
+                    "mission_id": "mission-003",
+                    "assignments": [
+                        {"drone_id": "drone-1", "area_id": "area-c-1", "priority": 80},
+                        {"drone_id": "drone-2", "area_id": "area-c-2", "priority": 80},
+                    ],
+                    "generated_at": "2026-09-06T10:00:00+09:00",
+                },
+            )
+            print("  결과:", r8.content[0].text)
+            r8_drone1 = await session.call_tool("get_status", {"drone_id": "drone-1"})
+            r8_drone2 = await session.call_tool("get_status", {"drone_id": "drone-2"})
+            print("  drone-1:", r8_drone1.content[0].text)
+            print("  drone-2:", r8_drone2.content[0].text)
+            if "area-c-1" in r7.content[0].text and "area-c-2" in r7.content[0].text:
+                print("  ✅ area-c가 area-c-1, area-c-2로 분할되었습니다.")
+            else:
+                print("  ❌ 새 area_id가 생성되지 않았습니다.")
+
+            print("--- split_search_area: 기존 점 구역(area-a)도 분할 가능한지 확인 ---")
+            r9 = await session.call_tool(
+                "split_search_area", {"area_id": "area-a", "n_pieces": 2}
+            )
+            print("  결과:", r9.content[0].text)
+            if "area-a-1" in r9.content[0].text and "area-a-2" in r9.content[0].text:
+                print("  ✅ area-a(기존에 점으로만 있던 구역)도 분할되었습니다.")
+            else:
+                print("  ❌ area-a는 분할되지 않았습니다.")
+
+            print("--- return_home: 지나온 경로를 역순으로 되짚는지 확인 ---")
+            r6 = await session.call_tool("return_home", {"drone_id": "drone-1"})
+            print("  return_home:", r6.content[0].text)
+            r6_status = await session.call_tool("get_status", {"drone_id": "drone-1"})
+            print("  drone-1 최종 상태:", r6_status.content[0].text)
+            if "latitude=0.0" in r6_status.content[0].text and "longitude=0.0" in r6_status.content[0].text:
+                print("  ✅ 홈 위치(0, 0)로 정상 복귀했습니다.")
+            else:
+                print("  ❌ 홈 위치로 복귀하지 못했습니다.")
+
 
 asyncio.run(main())
