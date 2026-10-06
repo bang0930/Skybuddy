@@ -1,8 +1,8 @@
 """어댑터 두 개가 같은 계약을 지키는지 정적으로 검증한다.
 
 시뮬레이터 없이 돌아간다. 더 나아가 **pymavlink 도 ROS 2 도 없는 환경**에서
-그냥 실행해도 된다. 9개 검사 중 6개는 파이썬 표준 라이브러리만 쓰므로
-그대로 수행되고, 어댑터 임포트가 필요한 2)3) 만 건너뛴다.
+그냥 실행해도 된다. 10개 항목 중 2)3) 만 어댑터 임포트가 필요해 건너뛰고,
+나머지는 파이썬 표준 라이브러리만으로 그대로 수행된다.
 macOS 를 쓰는 팀원이 코드를 받자마자 확인할 수 있게 하려고 이렇게 만들었다.
 
   python3 tests/test_adapters.py     <- 팀 저장소 기준 경로
@@ -47,7 +47,7 @@ def check(label, condition, detail=""):
 print("=== 1) 어댑터 로드 ===")
 # 어댑터를 임포트하려면 pymavlink(MAVLink) 와 rclpy+ardupilot_msgs(DDS) 가 필요하다.
 # 둘 중 없는 것이 있으면 그 어댑터만 빼고 계속 진행한다.
-# 여기서 중단시키면 환경이 없는 팀원은 나머지 6개 검사도 못 보게 된다.
+# 여기서 중단시키면 환경이 없는 팀원은 나머지 4)~10) 검사도 못 보게 된다.
 adapters = []
 skipped = []
 
@@ -73,7 +73,7 @@ if skipped:
     print("\n  위 어댑터는 실행 환경이 없어 2) 3) 검사를 건너뜁니다.")
     for name, err, how in skipped:
         print(f"    {name}: {how}")
-    print("  4)~9) 는 표준 라이브러리만 쓰므로 그대로 수행합니다.")
+    print("  4)~10) 은 표준 라이브러리만 쓰므로 그대로 수행합니다.")
 
 # kpi_mission 은 프로토콜 라이브러리를 모듈 최상단에서 임포트하지 않는다
 # (make_drone() 안에서만 한다). 그래서 어떤 환경에서도 임포트된다.
@@ -196,6 +196,30 @@ body = src[src.index("def run_mission("):]
 leaks = [w for w in ("MavlinkDrone", "Ros2Drone", "mavutil", "rclpy", "pymavlink")
          if w in body]
 check("run_mission() 본문에 프로토콜 의존 없음", not leaks, f"발견 {leaks}")
+
+print("\n=== 10) 연결 유지(상주) 운용 대비 ===")
+# 미들웨어 Registry 는 연결을 한 번만 하고 객체를 계속 들고 쓴다.
+# 미션마다 새로 연결하던 때는 드러나지 않던 문제가 다시 생기지 않도록 소스를 확인한다.
+mav = open(os.path.join(APP_DIR, "mavlink_drone.py"), encoding="utf-8").read()
+mav_tele = mav[mav.index("def get_telemetry"):]
+check("MAVLink 상태 조회가 쌓인 메시지를 먼저 비움 (오래된 위치 방지)",
+      "self._drain()" in mav_tele.split("recv_match")[0])
+ack_reads = mav.count("type='COMMAND_ACK'")
+check("COMMAND_ACK 는 _wait_ack 한 곳에서만 받음 (다른 명령 응답과 혼동 방지)",
+      ack_reads == 1, f"{ack_reads}곳에서 직접 읽음")
+ros = open(os.path.join(APP_DIR, "ros2_drone.py"), encoding="utf-8").read()
+ros_takeoff = ros[ros.index("def takeoff"):ros.index("def goto")]
+check("AP_DDS 이륙 시 시동 직전에 홈 고도를 다시 잡음 (재이륙 시 기준점 일치)",
+      "_home_alt_amsl =" in ros_takeoff.split("ArmMotors.Request()")[0])
+ros_connect = ros[ros.index("def connect"):ros.index("def close")]
+check("ROS 2 노드 이름에서 하이픈 등 허용되지 않는 문자를 바꿈 (드론 ID 'drone-02' 대응)",
+      "re.sub(" in ros_connect.split("Node(")[0])
+ros_close = ros[ros.index("def close"):ros.index("def _on_geopose")]
+check("AP_DDS close() 를 여러 번 불러도 rclpy 정리는 한 번만 함 (다른 DDS 드론 보호)",
+      "if self._rclpy_held" in ros_close.split("_release_rclpy()")[0])
+land_default = inspect.signature(DroneInterface.land).parameters["timeout"].default
+check("land() 기본 대기 시간이 고도 기반 (인자 없이 불러도 높은 고도에서 안 끊김)",
+      land_default is None, f"기본값 {land_default}")
 
 print()
 if skipped:

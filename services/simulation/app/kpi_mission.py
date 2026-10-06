@@ -22,11 +22,11 @@ tests/test_adapters.py가 이 성질이 깨지지 않았는지 자동으로 검�
 임무 흐름:
     연결 → 이륙 → 웨이포인트 순회 → 출발점 귀환 → 착륙 → CSV 저장
 
-[명령 단위 분해 상태]
-웨이포인트 하나를 실행하는 부분은 execute_waypoint() 로 분리해두었다.
-미들웨어가 재할당이나 중단을 구현할 때 이 함수를 직접 호출하면 된다.
-다만 연결·이륙·착륙까지 포함한 완전한 명령 단위 분해(예: arm/takeoff/goto/land 를
-각각 외부에서 호출)는 미들웨어 연결 방식이 확정된 뒤에 진행한다. (INTERFACE.md 2-5)
+[미들웨어와의 관계]
+미들웨어(#24)는 이 파일의 run_mission() 을 쓰지 않는다. 드론마다 어댑터를 한 번 연결해
+두고 takeoff / goto / land 를 하나씩 직접 호출한다 (INTERFACE.md 2-1-2, 2-6).
+run_mission() 은 KPI 실험과 시연용 진입점이며, 실패 처리 정책은 미들웨어와 같다 (2-1-1).
+웨이포인트 하나를 실행하는 부분은 execute_waypoint() 로 따로 떼어 두었다.
 """
 import csv
 import math
@@ -64,6 +64,7 @@ REACH_THRESHOLD_M = 3     # 도달 판정 반경. 2m는 기체가 조금만 흔�
 WAYPOINT_TIMEOUT_S = 60   # 웨이포인트 하나당 제한 시간. 30초는 부족했다.
 RTH_TIMEOUT_S = 60        # 임무 종료 후 출발점 복귀 대기 시간
 GPS_HEALTHY_FIX_TYPE = 3  # 3 = 3D Fix. 이 미만이면 "GPS 저하"로 기록한다.
+POST_TAKEOFF_SETTLE_S = 5 # 이륙 직후 자세·위치 추정이 안정될 때까지 기다리는 시간
 
 # [최소 안전 고도를 실행 경계에서도 검증하는 이유]
 # 10~20m 로 날렸을 때 지형지물과 충돌하는 것을 실측으로 확인했다.
@@ -277,17 +278,20 @@ def execute_waypoint(drone, target_lat, target_lon, alt,
     }
 
 
-def _emergency_stop(drone, log, airborne):
+def _emergency_stop(drone, log, maybe_airborne):
     """비행 중 실패했을 때의 정지 정책. 한 곳에서만 수행한다.
 
-    공중이면 착륙을 먼저 시도하고, 실패하면 강제 disarm 한다.
+    공중일 수 있으면 착륙을 먼저 시도하고, 착륙을 확인하지 못하면 강제 disarm 한다.
+    공중에서 바로 disarm 하면 기체가 그대로 떨어지므로 착륙이 항상 먼저다.
     모터가 시동 상태로 남으면 여러 대 운용 시 다음 기체가 뜨는 동안 이 기체의
     스로틀도 살아 있는 상태가 되어 AirSim/ArduPilot 크래시를 유발한다 (실측 확인됨).
+
+    미들웨어 Dispatcher 의 _emergency_stop 과 같은 정책이다.
     """
-    if airborne:
+    if maybe_airborne:
         log("비상 착륙 시도")
         try:
-            if drone.land(timeout=60):
+            if drone.land():
                 log("착륙 확인됨")
                 return
         except Exception as e:
@@ -361,21 +365,27 @@ def run_mission(connection_string='udpin:127.0.0.1:14550', drone_id='drone1',
     log_rows = []
     wp_summary = []
     mission_start = time.time()
-    airborne = False
+    # "공중에 있을 수 있는가". 실패했을 때 착륙부터 할지 판단하는 데 쓴다.
+    maybe_airborne = False
     home_lat = home_lon = None
 
     # 연결부터 CSV 저장까지 전 구간을 감싼다.
     # 귀환·착륙·저장 중 어디서 실패하든 close() 가 반드시 실행되어야 하고,
     # 비행 중이었다면 기체를 지상으로 내려놓아야 한다.
     try:
+        # 이륙 명령을 보내기 '전에' 공중일 수 있다고 표시한다.
+        # takeoff() 는 시동 → 상승 → 목표 고도 도달 순서로 진행되므로, 상승 도중
+        # 고도 도달 시간 초과로 예외가 나면 이미 떠 있는 상태다. 정상 반환 뒤에만
+        # 표시하면 이 경우 착륙 없이 곧바로 disarm 해서 기체가 떨어진다.
+        # 지상에서 실패한 경우(시동 거부 등)에도 착륙 명령은 해가 없다.
+        maybe_airborne = True
         # takeoff() 는 목표 고도 도달까지 기다린 뒤 돌아온다(계약).
         drone.takeoff(alt)
-        airborne = True
 
         # 고도는 도달했지만 자세와 위치 추정이 흔들리는 순간이 있다.
         # 여기서 바로 홈 좌표를 읽으면 몇 m 어긋난 값이 잡혀 이후 웨이포인트가
         # 전부 밀린다. 짧게 안정화 시간을 준다.
-        time.sleep(5)
+        time.sleep(POST_TAKEOFF_SETTLE_S)
 
         home = drone.get_telemetry()
         if home is None:
@@ -428,16 +438,18 @@ def run_mission(connection_string='udpin:127.0.0.1:14550', drone_id='drone1',
         else:
             log("  [경고] 귀환 타임아웃 - 현재 위치에서 착륙합니다")
 
-        # 착륙 타임아웃은 고도에 맞춰 잡는다. 고정 60초로 두면 40m에서 출발한 기체가
-        # 다 내려오기 전에 타임아웃이 나서 "여전히 armed일 수 있음" 경고가 뜬다 (실측 확인됨).
-        landed = drone.land(timeout=max(60, int(alt * 4)))
-        airborne = not landed
-        log("착륙 및 disarm 확인됨" if landed else "[경고] 착륙 확인 타임아웃 (여전히 armed일 수 있음)")
+        # 착륙 대기 시간은 어댑터가 현재 고도로 정한다 (DroneInterface.landing_timeout_s).
+        # 착륙(시동 꺼짐)을 확인하지 못하면 미션을 실패로 처리한다.
+        # 경고만 남기고 끝내면 기체가 armed 상태로 남은 채 연결이 닫힐 수 있다.
+        # 예외를 던지면 아래 except 에서 착륙을 다시 시도하고, 그래도 안 되면 disarm 한다.
+        if not drone.land():
+            raise RuntimeError("착륙 후 시동 꺼짐을 확인하지 못했다 (기체가 armed 상태일 수 있음)")
+        maybe_airborne = False
+        log("착륙 및 disarm 확인됨")
 
     except Exception:
         log("미션 실패 - 비상 정지 절차 수행")
-        _emergency_stop(drone, log, airborne)
-        airborne = False
+        _emergency_stop(drone, log, maybe_airborne)
         raise
 
     finally:

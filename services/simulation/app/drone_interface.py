@@ -82,6 +82,14 @@ class DroneInterface(ABC):
       relative_alt_m  : 홈(이륙 지점) 기준 상대 고도, 미터. AMSL 아님.
       vx, vy, vz      : NED 기준 m/s (vz 는 아래쪽이 양수)
       heading_deg     : 진북 기준 시계방향 0~360도
+
+    연결 유지(상주) 운용 규약:
+      미들웨어 Registry 는 connect() 를 한 번만 하고 객체를 계속 들고 있으면서
+      명령이 올 때마다 메서드를 부른다. 그래서 구현체는
+        1) 한참 쉬었다가 불려도 '그 시점의' 최신 상태를 돌려줘야 하고
+        2) 같은 연결로 이륙-착륙을 여러 번 반복할 수 있어야 한다.
+      구현체는 스레드 안전하지 않다. 여러 스레드에서 쓸 때는 호출 측이 한 번에
+      하나씩만 부르도록 직렬화해야 한다 (미들웨어의 DroneHandle.exclusive 가 담당).
     """
 
     @abstractmethod
@@ -106,8 +114,13 @@ class DroneInterface(ABC):
         도달 판정은 호출 측이 get_telemetry() 로 직접 한다."""
 
     @abstractmethod
-    def land(self, timeout=60):
-        """착륙 + 시동 꺼짐까지 확인. 성공하면 True."""
+    def land(self, timeout=None):
+        """착륙 + 시동 꺼짐까지 확인. 성공하면 True, 기한 안에 확인 못 하면 False.
+
+        timeout 이 None 이면 현재 고도로 정한다 (landing_timeout_s 참고).
+        미들웨어는 land() 를 인자 없이 부르므로, 기본값이 고도와 무관한 고정값이면
+        높이 떠 있는 기체가 다 내려오기 전에 '착륙 실패'로 판정된다.
+        """
 
     @abstractmethod
     def disarm(self, timeout=5):
@@ -125,6 +138,15 @@ class DroneInterface(ABC):
     @abstractmethod
     def close(self):
         """연결 정리."""
+
+    @staticmethod
+    def landing_timeout_s(relative_alt_m):
+        """착륙 확인을 기다릴 시간(초). 고도 1m당 4초, 최소 60초.
+
+        고정 60초로 두면 40m 에서 출발한 기체도 다 내려오기 전에 끊긴다 (실측 확인됨).
+        """
+        alt = relative_alt_m if relative_alt_m is not None else 0.0
+        return max(60.0, alt * 4.0)
 
     @staticmethod
     def distance_m(lat1, lon1, lat2, lon2):
