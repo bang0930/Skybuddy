@@ -76,8 +76,9 @@ MCP 서버 ── MissionService
 - 마지막 텔레메트리 수신 후 경과 시간이 `telemetry_timeout_s`(기본 3초)를 넘으면
   `disconnected`입니다. 통신이 끊겨도 마지막 위치와 운용 상태는 유지합니다.
 - 어댑터의 `takeoff()`가 고도 도달을 기다리며 내부에서 읽는 텔레메트리도 캐시에 반영됩니다.
-  다만 실제 `MavlinkDrone.takeoff()`의 시동·GUIDED 전환 대기(최대 30초)처럼 텔레메트리를
-  읽지 않는 구간에는 `disconnected`로 보일 수 있으며, 실환경 검증 때 확인이 필요합니다.
+  다만 실제 `MavlinkDrone.takeoff()`의 시동·GUIDED 전환 대기(최대 30초)나 `land()`의 시동
+  해제 대기(고도 1m당 4초, 최소 60초)처럼 텔레메트리를 읽지 않는 구간에는 `disconnected`로
+  보일 수 있습니다. 명령 실행 중 연결 판정 방식은 실환경 검증 때 함께 정리해야 합니다.
 
 ## 계획 → 명령
 
@@ -91,7 +92,7 @@ takeoff(탐색 고도) → goto(구역 웨이포인트) × N → 귀환 → land
 |---|---|---|
 | `takeoff` | `takeoff(alt)` — 목표 고도 95% 도달 후 반환 | `sent → succeeded` |
 | `goto` | `goto(lat, lon, alt)` — 즉시 반환 | `sent → executing → succeeded` (3m 이내 도달) |
-| `land` | `land()` — 시동 해제 확인 시 True | `sent → succeeded`, False면 `timed_out` |
+| `land` | `land()` — 시동 해제 확인 시 True. 대기 시간은 어댑터가 현재 고도로 정함(1m당 4초, 최소 60초) | `sent → succeeded`, False면 `timed_out` |
 | `disarm` | `disarm()` | `land`와 동일 |
 
 - `DroneInterface`는 프로토콜 ACK를 노출하지 않으므로 `accepted`를 임의로 만들지 않습니다.
@@ -153,7 +154,7 @@ python services/middleware/scripts/check_mvp_pipeline.py
 
 | 임시 구현 | 위치 | 교체 대상 |
 |---|---|---|
-| 구역 꼭짓점 순회 웨이포인트 | `runtime/planning.py`의 `area_waypoints()` | 시뮬레이션 파트의 boundary → 웨이포인트 생성 함수 (#16 이후) |
+| 구역 꼭짓점 순회 웨이포인트 | `runtime/planning.py`의 `area_waypoints()` | boundary → 웨이포인트 경로 생성 함수 (#26 진행 중, 담당 정리 필요) |
 | `goto(home)` 귀환 | `runtime/planning.py`의 `build_mission_task()` | `DroneInterface.return_home()`. 클라이언트에 메서드가 생기면 capabilities에 `return_home`이 자동 추가되어 그 명령을 사용합니다. |
 | FakeDrone | `runtime/fake_drone.py`, `registry.py`의 `ClientFactory` | 시뮬레이션 파트의 정식 FakeDrone |
 
