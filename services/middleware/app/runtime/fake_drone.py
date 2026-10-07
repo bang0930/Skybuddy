@@ -19,6 +19,12 @@ METERS_PER_DEGREE_LAT = 111_320.0
 FakeFlavor = Literal["mavlink", "ap_dds"]
 
 
+def landing_timeout_s(relative_alt_m: float | None) -> float:
+    """Same rule as ``DroneInterface.landing_timeout_s`` in the simulation service."""
+    altitude = relative_alt_m if relative_alt_m is not None else 0.0
+    return max(60.0, altitude * 4.0)
+
+
 class FakeDrone:
     """Kinematic stand-in exposing the seven ``DroneInterface`` methods."""
 
@@ -96,11 +102,17 @@ class FakeDrone:
             north, east = self._offset(lat, lon)
             self._target = (north, east, float(alt_m))
 
-    def land(self, timeout=60):
-        """Descend in place and return True once disarmed on the ground."""
+    def land(self, timeout=None):
+        """Descend in place and return True once disarmed on the ground.
+
+        ``timeout=None`` follows ``DroneInterface.landing_timeout_s``: 4 s per metre of
+        current altitude, at least 60 s.
+        """
         self._require_connected()
         with self._lock:
             self._advance()
+            if timeout is None:
+                timeout = landing_timeout_s(self._alt_m)
             self._target = (self._north_m, self._east_m, 0.0)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
