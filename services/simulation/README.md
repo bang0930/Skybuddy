@@ -19,7 +19,8 @@ AP_DDS(ROS 2)로 제어**하면서 각각 탐색 임무를 수행시키고 KPI�
 
 1. **`INTERFACE.md`** — 미들웨어/LLM과의 접점. 텔레메트리 스키마, 제어 인터페이스,
    반드시 알아야 할 제약사항. **가장 중요한 문서입니다.**
-2. **`app/drone_interface.py`** — 모든 어댑터가 지켜야 하는 계약. 30줄 남짓.
+2. **`app/drone_interface.py`** — 모든 어댑터가 지켜야 하는 계약(`DroneInterface`)과
+   텔레메트리 타입(`Telemetry`).
 3. **`app/mavlink_drone.py`** / **`app/ros2_drone.py`** — 같은 계약의 두 구현.
    나란히 보면 프로토콜 차이가 어디에서 흡수되는지 보입니다.
 4. **`app/kpi_mission.py`** — 임무 수행과 KPI 계산. 프로토콜을 모릅니다.
@@ -29,16 +30,18 @@ AP_DDS(ROS 2)로 제어**하면서 각각 탐색 임무를 수행시키고 KPI�
 
 ```
 app/
-  drone_interface.py     프로토콜 공통 계약 (메서드 7개 + 텔레메트리 16필드)
+  drone_interface.py     프로토콜 공통 계약 (메서드 7개 + 텔레메트리 17필드)
   mavlink_drone.py       MAVLink 어댑터 (pymavlink)
   ros2_drone.py          AP_DDS 어댑터 (rclpy)
   kpi_mission.py         드론 1대의 임무 + KPI 수집
   kpi_mission_multi.py   2대 동시 운용 진입점
 tests/
   test_adapters.py       계약 준수 정적 검증 (시뮬레이터 없이 실행 가능)
+  test_mission_policy.py 실패 처리 정책 검증 - 가짜 드론 사용 (시뮬레이터 없이 실행 가능)
 scripts/
   start_hetero_sim.sh    이기종 2대 환경 기동
   tune_damping.py        자세 루프 감쇠 튜닝
+  session_check.py       연결 한 번으로 임무 두 번 (상주 운용 점검, 실제 SITL 필요)
 config/
   airsim_2vehicle.json   AirSim 2기체 설정
   dds_drone.parm         DDS 드론 시동 파라미터
@@ -60,18 +63,22 @@ Windows          AirSim (Blocks 또는 LandscapeMountains)
 WSL2 Ubuntu      ArduPilot SITL x2, micro-XRCE-DDS Agent, ROS 2 Humble
 ```
 
-**어댑터 계약 검증은 macOS에서도 그대로 돌아갑니다.** 시뮬레이터는 물론이고
-pymavlink나 ROS 2가 설치돼 있지 않아도 됩니다. 9개 검사 중 6개는 파이썬 표준
-라이브러리만 쓰므로 수행되고, 어댑터 임포트가 필요한 2개만 건너뜁니다.
+**두 검사 모두 macOS에서 그대로 돌아갑니다.** 시뮬레이터는 물론이고
+pymavlink나 ROS 2가 설치돼 있지 않아도 됩니다. `test_adapters.py`는 10개 항목 중
+어댑터 임포트가 필요한 2개만 건너뛰고, `test_mission_policy.py`는 전부 수행됩니다.
 
 ```bash
 python3 tests/test_adapters.py
+python3 tests/test_mission_policy.py
 ```
 
-이 검사가 확인하는 것: 두 어댑터의 메서드·시그니처 일치, 텔레메트리 스키마와
+`test_adapters.py`가 확인하는 것: 두 어댑터의 메서드·시그니처 일치, 텔레메트리 스키마와
 CSV 컬럼 일치, 누락값을 빈 문자열이 아닌 `None`으로 쓰는지, 최소 안전 고도 거부,
-웨이포인트 입력 경로의 배타성, 그리고 `run_mission()` 본문에 프로토콜 이름이
-새어 들어오지 않았는지.
+웨이포인트 입력 경로의 배타성, `run_mission()` 본문에 프로토콜 이름이 새어 들어오지
+않았는지, 그리고 연결을 유지한 채 쓸 때의 대비(10번 항목).
+
+`test_mission_policy.py`는 정해진 대로 실패하는 가짜 드론을 넣어, 착륙 확인 실패와
+이륙 도중 실패에서 착륙·시동 해제·연결 정리가 올바른 순서로 일어나는지 확인합니다.
 
 ## 측정 결과
 
@@ -82,10 +89,10 @@ CSV 컬럼 일치, 누락값을 빈 문자열이 아닌 `None`으로 쓰는지, 
 | 웨이포인트 도달 | 5/5 | 5/5 |
 | 구간 이동 시간 | 5.3~8.0초 | 3.1~4.7초 |
 | 경로 효율 (평균) | 0.954~0.955 | 0.834~0.865 |
-| 총 소요 | 122.3~124.1초 | 86.5~86.7초 |
+| 총 소요 | 122.3~124.2초 | 86.5~86.7초 |
 | 진동(vibration_z) | 0.046~0.126 | 지표 없음 |
 
-2회 측정 범위입니다. `samples/`에 2회차 원본 CSV가 있습니다.
+3회 측정 범위입니다. `samples/`에 3회차 원본 CSV가 있습니다.
 
 > 속도·효율 차이는 프로토콜 차이가 아닙니다. 측정 시점에 두 기체의 ArduPilot
 > 버전과 자세 루프 튜닝이 달랐습니다. 자세한 내용은 `INTERFACE.md` 3-3 참고.
@@ -98,7 +105,11 @@ CSV 컬럼 일치, 누락값을 빈 문자열이 아닌 `None`으로 쓰는지, 
 
 ## 미들웨어 연동 지점
 
-미들웨어가 계산한 경로를 그대로 주입할 수 있습니다.
+#24 미들웨어는 `app/`의 어댑터를 직접 import해서, 드론마다 한 번 연결해 두고
+`takeoff` / `goto` / `land`를 하나씩 호출합니다. 이렇게 연결을 오래 유지할 때 필요한
+대비와 제약(스레드 안전성, 실행 환경)은 `INTERFACE.md` 2-1-2에 정리했습니다.
+
+단독 실험에서는 경로를 `run_mission()`에 그대로 주입할 수 있습니다.
 
 ```python
 run_mission(connection_string='ros2:ap', drone_id='drone2', protocol='ros2',
@@ -107,13 +118,13 @@ run_mission(connection_string='ros2:ap', drone_id='drone2', protocol='ros2',
 ```
 
 웨이포인트 하나만 실행하려면 `execute_waypoint()`를 직접 호출하면 됩니다.
-자세한 규약은 `INTERFACE.md` 2-1-1과 2-5를 참고하십시오.
+실패 처리 규약은 `INTERFACE.md` 2-1-1, 경로 주입은 2-5를 참고하십시오.
 
 ## 미들웨어 명령 계약(#17)과의 대조
 
-`feat/17-command-contracts-api-schema`의 명령 계약과 대조했습니다.
-5개 명령 중 4개가 `DroneInterface`와 그대로 맞고, 맞출 것이 셋 남았습니다.
-대조표와 조립 지점은 **`INTERFACE.md` 2-7, 2-8**에 정리했습니다.
+5개 명령 중 4개가 `DroneInterface`와 그대로 맞습니다. 대조 당시 맞출 것으로 꼽은
+셋 중 고도 기준과 필드 이름은 #24 미들웨어에서 처리하기로 해서, 남은 것은
+`return_home()` 하나입니다. 대조표와 조립 지점은 **`INTERFACE.md` 2-7, 2-8**에 있습니다.
 
 > ⚠️ 목 서버의 "`airsim.MultirotorClient()`로 교체하면 됨" 안내는 현재 구성에서
 > 동작하지 않습니다. 기체 타입이 `ArduCopter`라 AirSim은 물리·렌더링만 담당합니다.
@@ -121,11 +132,8 @@ run_mission(connection_string='ros2:ap', drone_id='drone2', protocol='ros2',
 
 ## 다음 작업
 
-- `return_home()` 독립 메서드 추출 (통신 두절 자동 귀환과 함께)
-- `altitude_reference` 대응 및 좌표 필드명 통일 (#17 계약 정합)
-- 가짜 드론(mock)으로 어댑터 동작 테스트 — 지금 테스트는 전부 정적 검사
-- 연결·이륙·착륙까지 포함한 완전한 명령 단위 분해 (전송 계층 확정 후)
-- 미들웨어와의 전송 계층 확정 (모듈 호출 / REST / MCP)
+- `return_home()` 추가 (#24 의존 항목. 미들웨어는 그전까지 goto(home)으로 대체)
+- 정식 FakeDrone (#24 의존 항목)
 - 배터리·GPS 저하 값 주입 기능 (장애 시나리오 검증용)
 - 탐색 구역 커버리지 지표 구현
 - 두 기체의 펌웨어 버전과 튜닝을 통일해 성능 비교 재측정
