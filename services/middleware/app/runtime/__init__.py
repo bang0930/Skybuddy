@@ -1,5 +1,6 @@
 """Runtime pieces that connect the middleware contracts to drones."""
 
+from .config import DispatcherConfig
 from .dispatcher import CommandTracker, Dispatcher, TaskExecution
 from .event_log import EventLog
 from .fake_drone import FakeDrone
@@ -19,6 +20,7 @@ __all__ = [
     "ClientFactory",
     "CommandTracker",
     "Dispatcher",
+    "DispatcherConfig",
     "DroneConfig",
     "DroneHandle",
     "DroneMode",

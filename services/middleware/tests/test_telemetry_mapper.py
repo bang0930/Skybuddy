@@ -141,3 +141,17 @@ def test_empty_sample_produces_disconnected_state_without_fabricated_values() ->
     assert state.telemetry_availability(TelemetryField.POSITION) == (
         TelemetryAvailability.TEMPORARILY_UNAVAILABLE
     )
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(360.0, 0.0), (359.99, 359.99), (-90.0, 270.0)])
+def test_heading_is_normalized_into_zero_to_360(raw, expected) -> None:
+    # Adapters round after "% 360", so 359.996 arrives as 360.0 (same direction as 0.0).
+    state = TelemetryStateMapper().map(
+        ap_dds_telemetry() | {"heading_deg": raw},
+        drone_id="drone-02",
+        protocol=ProtocolType.AP_DDS,
+        capabilities=AP_DDS_CAPABILITIES,
+        status=DroneStatus.AVAILABLE,
+        telemetry_age_s=0.1,
+    )
+    assert state.heading_deg == pytest.approx(expected)

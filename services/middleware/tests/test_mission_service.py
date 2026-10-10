@@ -5,7 +5,7 @@ import time
 
 from conftest import plan
 
-from app.runtime import Dispatcher, MissionService
+from app.runtime import Dispatcher, DispatcherConfig, MissionService
 from app.schemas import (
     CommandStatus,
     DroneStatus,
@@ -99,8 +99,12 @@ def test_unknown_mission_is_rejected(service) -> None:
 def test_lost_link_times_out_aborts_task_and_stops_drone(
     registry, event_log
 ) -> None:
+    # A fast minimum speed keeps the distance-based leg limit short for this test.
     dispatcher = Dispatcher(
-        registry, event_log, waypoint_timeout_s=0.3, telemetry_poll_timeout_s=0.05
+        registry,
+        event_log,
+        config=DispatcherConfig(waypoint_timeout_s=0.3, min_ground_speed_m_s=30),
+        telemetry_poll_timeout_s=0.05,
     )
     from conftest import scenario
 
@@ -150,3 +154,21 @@ def test_event_log_records_submission_and_transitions(service, event_log) -> Non
     succeeded = [t for t in transitions if t["status"] == "succeeded"]
     assert all(t["elapsed_since_sent_s"] >= 0 for t in succeeded)
     assert {t["protocol"] for t in transitions} == {"ap_dds"}
+
+
+def test_long_transit_legs_get_time_proportional_to_distance(registry, event_log) -> None:
+    from conftest import scenario
+
+    # Base limit 0.2 s would cut off a ~30 m leg; 30 m / 20 m/s = 1.5 s does not.
+    dispatcher = Dispatcher(
+        registry,
+        event_log,
+        config=DispatcherConfig(waypoint_timeout_s=0.2, min_ground_speed_m_s=20),
+        telemetry_poll_timeout_s=0.05,
+    )
+    service = MissionService(registry, [scenario()], dispatcher, event_log)
+
+    service.submit_plan(plan(("drone-01", "area-north")))
+    report = wait_for_completion(service)
+
+    assert report.state == MissionState.SUCCEEDED

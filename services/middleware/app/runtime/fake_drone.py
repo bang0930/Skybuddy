@@ -154,7 +154,8 @@ class FakeDrone:
             "vx": round(north_v, 3),
             "vy": round(east_v, 3),
             "vz": round(down_v, 3),
-            "heading_deg": round(heading, 2),
+            # Round before wrapping so 359.996 becomes 0.0, never 360.0.
+            "heading_deg": round(heading, 2) % 360,
             "gps_fix_type": 3,
             # AP_DDS provides no satellite count, vibration, or clipping topics.
             "satellites_visible": 12 if is_mavlink else None,

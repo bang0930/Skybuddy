@@ -5,6 +5,7 @@ import time
 
 from conftest import plan
 from fastmcp import Client
+from test_mission_service import wait_for_completion
 
 from app.mcp_server import create_mcp_server
 
@@ -22,7 +23,9 @@ def test_exposes_three_tools_with_input_schemas(service) -> None:
 
     assert set(tools) == {"get_mission_context", "submit_mission_plan", "get_mission_status"}
     submit = tools["submit_mission_plan"].inputSchema
-    assert submit["required"] == ["mission_id", "assignments", "generated_at"]
+    # generated_at is optional: an LLM cannot know the current time.
+    assert submit["required"] == ["mission_id", "assignments"]
+    assert "generated_at" in submit["properties"]
     item = submit["properties"]["assignments"]["items"]
     item = submit.get("$defs", {}).get(item.get("$ref", "").split("/")[-1], item)
     assert set(item["properties"]) == {"drone_id", "area_id", "priority"}
@@ -74,3 +77,24 @@ def test_unknown_mission_is_a_tool_error(service) -> None:
     result = run(call())
     assert result.is_error
     assert "mission-404" in result.content[0].text
+
+
+def test_server_fills_generated_at_when_omitted(service, event_log) -> None:
+    async def submit():
+        async with Client(create_mcp_server(service)) as client:
+            return (await client.call_tool(
+                "submit_mission_plan",
+                {
+                    "mission_id": "mission-001",
+                    "assignments": [{"drone_id": "drone-02", "area_id": "area-south"}],
+                },
+            )).data
+
+    result = run(submit())
+
+    assert result["status"] == "accepted"
+    submitted = next(e for e in event_log.events if e["event"] == "plan_submitted")
+    assert "generated_at" not in submitted["plan"]  # logged exactly as the LLM sent it
+    assert submitted["generated_at_filled_by_server"] is True
+    # The flight continues in the background; let it finish before teardown.
+    wait_for_completion(service)

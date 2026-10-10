@@ -9,9 +9,10 @@ from collections.abc import Mapping
 from datetime import datetime
 from enum import IntEnum
 from math import isfinite
-from typing import Any, Protocol, Self
+from typing import Any, Protocol
 
 from pydantic import Field, model_validator
+from typing_extensions import Self
 
 from app.schemas import (
     AltitudeReference,

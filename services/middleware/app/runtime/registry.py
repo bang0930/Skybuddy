@@ -13,15 +13,17 @@ Each registered drone owns one client. Every call into that client goes through
 
 import contextlib
 import json
+import logging
 import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal, Self
+from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationError, model_validator
+from typing_extensions import Self
 
 from app.adapters import (
     AP_DDS_CAPABILITIES,
@@ -40,7 +42,10 @@ from app.schemas import (
 )
 from app.schemas.mission import ContractModel, Identifier, _require_unique
 
+from .config import DispatcherConfig
 from .fake_drone import FakeDrone
+
+logger = logging.getLogger(__name__)
 
 # services/middleware/app/runtime/registry.py -> services/simulation/app
 DEFAULT_SIMULATION_APP = Path(__file__).resolve().parents[3] / "simulation" / "app"
@@ -89,6 +94,7 @@ class RegistryConfig(ContractModel):
         default=None,
         description="Directory containing mavlink_drone.py and ros2_drone.py (real mode).",
     )
+    dispatcher: DispatcherConfig = Field(default_factory=DispatcherConfig)
 
     @model_validator(mode="after")
     def drone_ids_must_be_unique(self) -> Self:
@@ -120,11 +126,17 @@ class DroneHandle:
         self.status = DroneStatus.AVAILABLE
         self.binding: MavlinkDroneBinding | ApDdsBinding | None = None
         self.capabilities = _capabilities_for(config.protocol, client)
+        self.connected = False
+        self.connect_error: str | None = None
+        # Why the newest sample was rejected by the DroneState contract, if it was.
+        self.sample_error: str | None = None
         self._clock = clock
         self._client_lock = threading.RLock()
         self._sample_lock = threading.Lock()
         self._latest: dict[str, Any] | None = None
         self._latest_at: float | None = None
+        self._valid: dict[str, Any] | None = None
+        self._valid_at: float | None = None
         _install_telemetry_tap(client, self._record)
 
     @contextlib.contextmanager
@@ -142,15 +154,25 @@ class DroneHandle:
                 self._client_lock.release()
 
     def connect(self, *, first_sample_timeout_s: float = 2.0) -> None:
-        with self.exclusive():
-            self.client.connect()
-            # Read one sample so the drone has a position and a link state immediately.
-            self.client.get_telemetry(timeout=first_sample_timeout_s)
+        """Connect the client; on failure record why and re-raise."""
+        try:
+            with self.exclusive():
+                self.client.connect()
+                # Read one sample so the drone has a position and a link state immediately.
+                self.client.get_telemetry(timeout=first_sample_timeout_s)
+        except Exception as exc:
+            self.connect_error = f"{type(exc).__name__}: {exc}"
+            with contextlib.suppress(Exception), self.exclusive():
+                self.client.close()
+            raise
+        self.connected = True
+        self.connect_error = None
         self.binding = _binding_for(self)
 
     def close(self) -> None:
         with self.exclusive():
             self.client.close()
+        self.connected = False
 
     def latest_sample(self) -> tuple[dict[str, Any] | None, float | None]:
         """Return the last telemetry sample and its age in seconds."""
@@ -158,6 +180,26 @@ class DroneHandle:
             if self._latest is None or self._latest_at is None:
                 return None, None
             return dict(self._latest), max(0.0, self._clock() - self._latest_at)
+
+    def snapshot(self) -> tuple[dict[str, Any] | None, float | None]:
+        """Return the newest sample and when it was recorded."""
+        with self._sample_lock:
+            return (None if self._latest is None else dict(self._latest)), self._latest_at
+
+    def last_valid(self) -> tuple[dict[str, Any] | None, float | None]:
+        """Return the newest sample that passed the DroneState contract."""
+        with self._sample_lock:
+            return (None if self._valid is None else dict(self._valid)), self._valid_at
+
+    def accept_sample(self, sample: dict[str, Any], recorded_at: float) -> None:
+        with self._sample_lock:
+            self._valid, self._valid_at = dict(sample), recorded_at
+        self.sample_error = None
+
+    def reject_sample(self, reason: str) -> None:
+        if reason != self.sample_error:
+            logger.warning("%s: telemetry sample rejected: %s", self.drone_id, reason)
+        self.sample_error = reason
 
     def _record(self, sample: dict[str, Any]) -> None:
         with self._sample_lock:
@@ -196,9 +238,22 @@ class DroneRegistry:
         ]
         return cls(handles, telemetry_timeout_s=config.telemetry_timeout_s, clock=clock)
 
-    def connect_all(self) -> None:
+    def connect_all(self) -> dict[str, str]:
+        """Connect every drone; return ``{drone_id: error}`` for the ones that failed.
+
+        A failed drone stays registered with no telemetry, so it is reported as
+        disconnected and plan validation rejects assignments to it. The server keeps
+        running with the drones that did connect.
+        """
+        errors = {}
         for handle in self._handles.values():
-            handle.connect()
+            try:
+                handle.connect()
+            except Exception:
+                error = handle.connect_error or "unknown error"
+                errors[handle.drone_id] = error
+                logger.warning("%s: connect failed: %s", handle.drone_id, error)
+        return errors
 
     def close_all(self) -> None:
         for handle in self._handles.values():
@@ -226,16 +281,44 @@ class DroneRegistry:
 
         While a task holds the client (for example during a blocking takeoff), the cached
         sample is used instead of waiting.
+
+        One drone's bad data never breaks the whole status report: a sample that violates
+        the ``DroneState`` contract is treated as not received, and the last valid sample
+        is reported instead (it turns disconnected once it is older than the timeout).
         """
         handle = self.get(drone_id)
-        if refresh:
+        if refresh and handle.connected:
             with handle.exclusive(blocking=False) as acquired:
                 if acquired:
-                    handle.client.get_telemetry(timeout=self._refresh_timeout_s)
-        sample, age = handle.latest_sample()
-        if sample is None:
-            # No telemetry ever arrived: report an empty, disconnected snapshot.
+                    try:
+                        handle.client.get_telemetry(timeout=self._refresh_timeout_s)
+                    except Exception as exc:  # report the cached state instead
+                        logger.warning("%s: telemetry refresh failed: %s", drone_id, exc)
+
+        sample, recorded_at = handle.snapshot()
+        try:
+            state = self._map(handle, sample, recorded_at)
+        except ValueError as exc:
+            handle.reject_sample(_describe_error(exc))
+            return self._map(handle, *handle.last_valid())
+        if sample is not None:
+            handle.accept_sample(sample, recorded_at)
+        return state
+
+    def states(self, *, refresh: bool = True) -> list[DroneState]:
+        return [self.state(drone_id, refresh=refresh) for drone_id in self._handles]
+
+    def _map(
+        self,
+        handle: DroneHandle,
+        sample: dict[str, Any] | None,
+        recorded_at: float | None,
+    ) -> DroneState:
+        if sample is None or recorded_at is None:
+            # No usable telemetry: report an empty, disconnected snapshot.
             sample, age = {"timestamp": self._clock()}, None
+        else:
+            age = max(0.0, self._clock() - recorded_at)
         return self._mapper.map(
             sample,
             drone_id=handle.drone_id,
@@ -244,9 +327,6 @@ class DroneRegistry:
             status=handle.status,
             telemetry_age_s=age,
         )
-
-    def states(self, *, refresh: bool = True) -> list[DroneState]:
-        return [self.state(drone_id, refresh=refresh) for drone_id in self._handles]
 
 
 class ClientFactory:
@@ -282,6 +362,18 @@ class ClientFactory:
         from ros2_drone import Ros2Drone
 
         return Ros2Drone(config.connection_string, drone_id=config.drone_id)
+
+
+def _describe_error(exc: ValueError) -> str:
+    """Name the offending fields, e.g. ``battery_percent: Input should be ... 100``."""
+    if isinstance(exc, ValidationError):
+        detail = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc']) or 'sample'}: {error['msg']}"
+            for error in exc.errors()
+        )
+    else:
+        detail = str(exc)
+    return detail[:500]
 
 
 def _capabilities_for(protocol: ProtocolType, client: Any) -> DroneCapabilities:

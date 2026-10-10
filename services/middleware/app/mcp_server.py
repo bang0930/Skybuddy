@@ -19,10 +19,10 @@ Environment variables:
 
 import os
 from pathlib import Path
-from typing import NotRequired, TypedDict
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from typing_extensions import NotRequired, TypedDict
 
 from app.runtime import (
     Dispatcher,
@@ -71,7 +71,7 @@ def create_mcp_server(service: MissionService) -> FastMCP:
     def submit_mission_plan(
         mission_id: str,
         assignments: list[AssignmentInput],
-        generated_at: str,
+        generated_at: str | None = None,
     ) -> dict:
         """드론별 탐색 구역 배정 계획을 제출합니다.
 
@@ -87,13 +87,15 @@ def create_mcp_server(service: MissionService) -> FastMCP:
             mission_id: 임무 식별자
             assignments: [{"drone_id": str, "area_id": str, "priority": 1~100}, ...]
                 priority는 생략 가능하며 숫자가 클수록 먼저 시작합니다.
-            generated_at: 계획 생성 시각, 시간대 포함 ISO 8601 (예: "2026-09-28T10:00:00+09:00")
+            generated_at: 생략하세요. 서버가 제출 시각으로 채웁니다. 직접 줄 때는 시간대
+                포함 ISO 8601 (예: "2026-09-28T10:00:00+09:00")
         """
         raw_plan = {
             "mission_id": mission_id,
             "assignments": [dict(assignment) for assignment in assignments],
-            "generated_at": generated_at,
         }
+        if generated_at:
+            raw_plan["generated_at"] = generated_at
         return service.submit_plan(raw_plan).model_dump(mode="json")
 
     @mcp.tool()
@@ -120,29 +122,35 @@ def build_service_from_env() -> MissionService:
     scenarios_dir = Path(os.environ.get("MIDDLEWARE_SCENARIOS_DIR", DEFAULT_SCENARIOS_DIR))
     event_log_path = Path(os.environ.get("MIDDLEWARE_EVENT_LOG", DEFAULT_EVENT_LOG))
 
-    registry = DroneRegistry.from_config(RegistryConfig.load(config_path))
+    config = RegistryConfig.load(config_path)
+    registry = DroneRegistry.from_config(config)
     scenarios = [
         MissionScenario.load(path) for path in sorted(scenarios_dir.glob("*.json"))
     ]
     if not scenarios:
         raise RuntimeError(f"no mission scenario JSON found in {scenarios_dir}")
     event_log = EventLog(event_log_path)
-    registry.connect_all()
+    # Drones that fail to connect stay registered as disconnected; the server still starts.
+    connect_errors = registry.connect_all()
     event_log.write(
         "server_started",
         drones_config=str(config_path),
         missions=[scenario.mission_id for scenario in scenarios],
+        dispatcher=config.dispatcher,
         drones=[
             {
                 "drone_id": handle.drone_id,
                 "protocol": handle.protocol,
                 "mode": handle.config.mode,
+                "connected": handle.connected,
+                "connect_error": connect_errors.get(handle.drone_id),
                 "binding": handle.binding,
             }
             for handle in registry.handles()
         ],
     )
-    return MissionService(registry, scenarios, Dispatcher(registry, event_log), event_log)
+    dispatcher = Dispatcher(registry, event_log, config=config.dispatcher)
+    return MissionService(registry, scenarios, dispatcher, event_log)
 
 
 def main() -> None:

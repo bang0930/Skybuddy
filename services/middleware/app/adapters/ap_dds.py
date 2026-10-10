@@ -8,9 +8,10 @@ flattened values from its topics and can invoke it through the small protocol be
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from math import atan2, degrees, isfinite, sqrt
-from typing import Any, Protocol, Self
+from typing import Any, Protocol
 
 from pydantic import Field, model_validator
+from typing_extensions import Self
 
 from app.schemas import (
     AltitudeReference,

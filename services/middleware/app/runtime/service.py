@@ -4,9 +4,10 @@ import json
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Self
+from typing import Any
 
 from pydantic import Field, model_validator
+from typing_extensions import Self
 
 from app.schemas import (
     AcceptedTask,
@@ -81,14 +82,25 @@ class MissionService:
         )
 
     def submit_plan(self, raw_plan: dict[str, Any]) -> PlanSubmissionResult:
-        """Validate and start a plan. Returns immediately; flights continue in threads."""
+        """Validate and start a plan. Returns immediately; flights continue in threads.
+
+        An LLM cannot know the current time, so a missing ``generated_at`` is filled with
+        the submission time. The event log keeps the plan exactly as submitted.
+        """
         mission_id = str(raw_plan.get("mission_id", ""))
         with self._lock:
             attempt = self._attempts.get(mission_id, 0) + 1
             self._attempts[mission_id] = attempt
+            filled_by_server = not raw_plan.get("generated_at")
             self.event_log.write(
-                "plan_submitted", mission_id=mission_id, attempt=attempt, plan=raw_plan
+                "plan_submitted",
+                mission_id=mission_id,
+                attempt=attempt,
+                plan=raw_plan,
+                generated_at_filled_by_server=filled_by_server,
             )
+            if filled_by_server:
+                raw_plan = {**raw_plan, "generated_at": datetime.now(timezone.utc)}
 
             if mission_id not in self.scenarios:
                 return self._reject(

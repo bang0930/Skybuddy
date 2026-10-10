@@ -2,9 +2,10 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Literal, Self
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator, model_validator
+from typing_extensions import Self
 
 from .mission import (
     AltitudeReference,

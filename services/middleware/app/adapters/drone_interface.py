@@ -7,9 +7,10 @@ translation. Protocol-specific request models (``to_mavlink_takeoff_request`` an
 """
 
 from enum import Enum
-from typing import Any, Protocol, Self
+from typing import Any, Protocol
 
 from pydantic import Field, model_validator
+from typing_extensions import Self
 
 from app.schemas import (
     AltitudeReference,

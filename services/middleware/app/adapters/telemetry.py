@@ -94,7 +94,7 @@ class TelemetryStateMapper:
             capabilities=capabilities,
             position=position,
             velocity_ned_m_s=velocity,
-            heading_deg=optional_float(telemetry, "heading_deg"),
+            heading_deg=_normalize_heading(optional_float(telemetry, "heading_deg")),
             gps_fix_type=optional_int(telemetry, "gps_fix_type"),
             satellites_visible=optional_int(telemetry, "satellites_visible"),
             gps_eph_m=optional_float(telemetry, "gps_eph"),
@@ -120,6 +120,18 @@ class TelemetryStateMapper:
         if telemetry_age_s <= self.telemetry_timeout_s:
             return ConnectionStatus.CONNECTED
         return ConnectionStatus.DISCONNECTED
+
+
+def _normalize_heading(heading: float | None) -> float | None:
+    """Map any finite angle into [0, 360).
+
+    Adapters compute ``round(angle % 360, 2)``, which yields exactly 360.0 for angles
+    of 359.995 or more; that is the same direction as 0.0, not an invalid value.
+    """
+    if heading is None:
+        return None
+    normalized = heading % 360.0
+    return 0.0 if normalized >= 360.0 else normalized
 
 
 def required_float(values: Mapping[str, Any], key: str) -> float:

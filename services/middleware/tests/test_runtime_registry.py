@@ -146,3 +146,77 @@ def test_config_rejects_duplicate_drone_ids() -> None:
     config["drones"][1]["drone_id"] = "drone-01"
     with pytest.raises(ValidationError, match="unique drone_id"):
         RegistryConfig.model_validate(config)
+
+
+def test_fake_drone_heading_never_reaches_360() -> None:
+    drone = FakeDrone(home_lat=-35.363261, home_lon=149.165197, telemetry_interval_s=0.001)
+    drone.connect()
+    drone._heading_deg = 359.997
+
+    assert drone.get_telemetry()["heading_deg"] == 0.0
+
+
+def test_invalid_sample_does_not_break_other_drones_or_the_report() -> None:
+    clock = ManualClock()
+    registry = DroneRegistry.from_config(fast_registry_config(), clock=clock)
+    registry.connect_all()
+    good = registry.state("drone-01")
+    handle = registry.get("drone-01")
+
+    # A sample outside the contract (battery above 100%) arrives from the adapter.
+    bad = dict(handle.latest_sample()[0], battery_remaining_pct=150.0)
+    handle._record(bad)
+
+    states = {state.drone_id: state for state in registry.states(refresh=False)}
+
+    assert set(states) == {"drone-01", "drone-02"}
+    assert states["drone-01"].battery_percent == good.battery_percent  # last valid sample
+    assert states["drone-01"].connection_status == ConnectionStatus.CONNECTED
+    assert "battery_percent" in handle.sample_error
+
+    # The rejected sample does not count as received: the link ages out.
+    clock.now += 5
+    assert registry.state("drone-01", refresh=False).connection_status == (
+        ConnectionStatus.DISCONNECTED
+    )
+
+
+def test_failed_connection_keeps_server_running_with_other_drones() -> None:
+    class UnreachableDrone(FakeDrone):
+        def connect(self, timeout=30):
+            raise RuntimeError("heartbeat not received")
+
+        def get_telemetry(self, timeout=2):
+            raise AssertionError("must not read telemetry from an unconnected drone")
+
+    def factory(config):
+        cls = UnreachableDrone if config.drone_id == "drone-02" else FakeDrone
+        return cls(home_lat=config.fake.home.latitude, home_lon=config.fake.home.longitude,
+                   telemetry_interval_s=0.001)
+
+    registry = DroneRegistry.from_config(fast_registry_config(), client_factory=factory)
+    errors = registry.connect_all()
+
+    assert errors == {"drone-02": "RuntimeError: heartbeat not received"}
+    assert registry.get("drone-01").connected
+    assert not registry.get("drone-02").connected
+    states = {state.drone_id: state for state in registry.states()}
+    assert states["drone-01"].connection_status == ConnectionStatus.CONNECTED
+    assert states["drone-02"].connection_status == ConnectionStatus.DISCONNECTED
+    assert states["drone-02"].position is None
+
+
+def test_dispatcher_settings_load_from_registry_config() -> None:
+    config = RegistryConfig.model_validate(
+        json.loads(fast_registry_config().model_dump_json())
+        | {"dispatcher": {"reach_threshold_m": 5, "waypoint_timeout_s": 90,
+                          "min_ground_speed_m_s": 2.5}}
+    )
+    assert config.dispatcher.reach_threshold_m == 5
+    assert config.dispatcher.leg_timeout_s(None) == 90
+    assert config.dispatcher.leg_timeout_s(100) == 90       # short leg: default applies
+    assert config.dispatcher.leg_timeout_s(500) == 200      # long leg: 500m / 2.5m/s
+    # Omitted section keeps the documented defaults (60 s, 3 m, 2.0 m/s).
+    defaults = fast_registry_config().dispatcher
+    assert (defaults.waypoint_timeout_s, defaults.reach_threshold_m,
+            defaults.min_ground_speed_m_s) == (60, 3, 2.0)

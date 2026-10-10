@@ -6,6 +6,7 @@ Completion rules follow the simulation ``DroneInterface`` contract:
   evidence of completion (``sent -> succeeded``).
 - ``goto()`` is fire-and-forget. The dispatcher polls telemetry: the first sample after
   sending marks ``executing``; arriving within ``reach_threshold_m`` marks ``succeeded``.
+  The leg's time limit grows with its length (``DispatcherConfig.leg_timeout_s``).
 - ``land()``/``disarm()`` return whether the vehicle was confirmed disarmed.
 
 ``DroneInterface`` exposes no protocol ACK, so ``accepted`` is never fabricated.
@@ -36,6 +37,7 @@ from app.schemas import (
     TaskState,
 )
 
+from .config import DispatcherConfig
 from .event_log import EventLog
 from .fake_drone import METERS_PER_DEGREE_LAT
 from .registry import DroneRegistry
@@ -131,14 +133,12 @@ class Dispatcher:
         registry: DroneRegistry,
         event_log: EventLog,
         *,
-        reach_threshold_m: float = 3.0,
-        waypoint_timeout_s: float = 60.0,
+        config: DispatcherConfig | None = None,
         telemetry_poll_timeout_s: float = 2.0,
     ) -> None:
         self.registry = registry
         self.event_log = event_log
-        self.reach_threshold_m = reach_threshold_m
-        self.waypoint_timeout_s = waypoint_timeout_s
+        self.config = config or DispatcherConfig()
         self.telemetry_poll_timeout_s = telemetry_poll_timeout_s
 
     def start(self, task: MissionTask, area_id: str) -> TaskExecution:
@@ -216,6 +216,14 @@ class Dispatcher:
             tracker.fail("COMMAND_TRANSLATION_FAILED", str(exc))
             return False
 
+        leg_distance = None
+        if request.method == InterfaceMethod.GOTO:
+            start, _ = handle.latest_sample()
+            if start and start.get("lat") is not None and start.get("lon") is not None:
+                leg_distance = _distance_m(
+                    start["lat"], start["lon"], request.latitude, request.longitude
+                )
+
         tracker.transition(CommandStatus.SENT)
         try:
             with handle.exclusive():
@@ -225,7 +233,12 @@ class Dispatcher:
             return False
 
         if request.method == InterfaceMethod.GOTO:
-            return self._await_arrival(tracker, request.latitude, request.longitude)
+            return self._await_arrival(
+                tracker,
+                request.latitude,
+                request.longitude,
+                timeout_s=self.config.leg_timeout_s(leg_distance),
+            )
         if request.method in (InterfaceMethod.LAND, InterfaceMethod.DISARM) and not outcome:
             tracker.transition(
                 CommandStatus.TIMED_OUT,
@@ -240,10 +253,15 @@ class Dispatcher:
         return True
 
     def _await_arrival(
-        self, tracker: CommandTracker, latitude: float, longitude: float
+        self,
+        tracker: CommandTracker,
+        latitude: float,
+        longitude: float,
+        *,
+        timeout_s: float,
     ) -> bool:
         handle = self.registry.get(tracker.command.drone_id)
-        deadline = time.monotonic() + self.waypoint_timeout_s
+        deadline = time.monotonic() + timeout_s
         last_distance = None
         while time.monotonic() < deadline:
             with handle.exclusive():
@@ -255,7 +273,7 @@ class Dispatcher:
             last_distance = _distance_m(
                 sample["lat"], sample["lon"], latitude, longitude
             )
-            if last_distance < self.reach_threshold_m:
+            if last_distance < self.config.reach_threshold_m:
                 tracker.transition(CommandStatus.SUCCEEDED)
                 return True
         detail = "no telemetry" if last_distance is None else f"{last_distance:.1f}m away"
@@ -263,7 +281,7 @@ class Dispatcher:
             CommandStatus.TIMED_OUT,
             CommandError(
                 code="WAYPOINT_TIMEOUT",
-                message=f"waypoint not reached within {self.waypoint_timeout_s}s ({detail})",
+                message=f"waypoint not reached within {timeout_s:.0f}s ({detail})",
                 retryable=True,
             ),
         )

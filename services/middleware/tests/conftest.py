@@ -6,6 +6,7 @@ import pytest
 
 from app.runtime import (
     Dispatcher,
+    DispatcherConfig,
     DroneRegistry,
     EventLog,
     MissionScenario,
@@ -105,6 +106,9 @@ def event_log(tmp_path):
 @pytest.fixture
 def service(registry, event_log):
     dispatcher = Dispatcher(
-        registry, event_log, waypoint_timeout_s=10, telemetry_poll_timeout_s=0.2
+        registry,
+        event_log,
+        config=DispatcherConfig(waypoint_timeout_s=10),
+        telemetry_poll_timeout_s=0.2,
     )
     return MissionService(registry, [scenario()], dispatcher, event_log)
