@@ -1,7 +1,18 @@
 from shapely.geometry import Polygon, LineString
 import math
 
+M_PER_DEG_LAT = 111320
 
+def latlon_to_xy(lat, lon, ref_lat, ref_lon):
+    x = (lon - ref_lon) * M_PER_DEG_LAT * math.cos(math.radians(ref_lat))
+    y = (lat - ref_lat) * M_PER_DEG_LAT
+
+    return x, y
+
+def xy_to_latlon(x, y, ref_lat, ref_lon):
+    lat = ref_lat + y/M_PER_DEG_LAT
+    lon = ref_lon + x / (M_PER_DEG_LAT * math.cos(math.radians(ref_lat)))
+    return lat, lon
 
 def _only_lines(geom):
     if geom.geom_type == "LineString":
@@ -67,3 +78,8 @@ print("U 20:", generate_sweep_waypoints(U, 20))
 wp = split_long_legs(generate_sweep_waypoints(square, 20), 40)
 print(wp)
 print(max(math.dist(a, b) for a, b in zip(wp, wp[1:])))
+
+ref = (-35.3633, 149.1652)
+x, y = latlon_to_xy(-35.3630, 149.1655, *ref)
+print(x, y)                      # 약 27.2, 33.4
+print(xy_to_latlon(x, y, *ref))  # (-35.3630, 149.1655)
