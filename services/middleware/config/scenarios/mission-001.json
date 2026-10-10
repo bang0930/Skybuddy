@@ -1,0 +1,28 @@
+{
+  "mission_id": "mission-001",
+  "instruction": "북쪽과 남쪽 구역을 드론 두 대로 나눠 수색해 줘",
+  "search_areas": [
+    {
+      "area_id": "area-north",
+      "boundary": [
+        {"latitude": -35.363126, "longitude": 149.16512},
+        {"latitude": -35.363126, "longitude": 149.16534},
+        {"latitude": -35.362947, "longitude": 149.16534},
+        {"latitude": -35.362947, "longitude": 149.16512}
+      ],
+      "search_altitude_m": 30,
+      "search_altitude_reference": "home_relative"
+    },
+    {
+      "area_id": "area-south",
+      "boundary": [
+        {"latitude": -35.363575, "longitude": 149.16512},
+        {"latitude": -35.363575, "longitude": 149.16534},
+        {"latitude": -35.363396, "longitude": 149.16534},
+        {"latitude": -35.363396, "longitude": 149.16512}
+      ],
+      "search_altitude_m": 50,
+      "search_altitude_reference": "home_relative"
+    }
+  ]
+}

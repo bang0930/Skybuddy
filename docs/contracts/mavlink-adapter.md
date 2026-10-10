@@ -44,6 +44,9 @@ binding은 연결 시 수신한 Heartbeat의 source system/component로 생성�
 | `clipping` | `clipping_count` | 세 가속도계 clipping 합계 |
 | `timestamp` | `observed_at` | Unix epoch를 UTC datetime으로 변환 |
 
+필드 변환은 프로토콜 공통 `TelemetryStateMapper`(`app/adapters/telemetry.py`)가 수행하며,
+`MavlinkStateMapper`는 SYSID binding 검증과 Heartbeat age 판정만 추가합니다.
+
 원본의 `None`과 과거 샘플의 빈 문자열은 공통 계약의 `None`으로 정규화합니다. 위치,
 속도, 진동처럼 여러 값으로 구성된 그룹은 하나라도 없으면 그룹 전체를 `None`으로 둡니다.
 MAVLink capabilities에는 해당 필드를 계속 포함하므로 이는 `unsupported`가 아니라
