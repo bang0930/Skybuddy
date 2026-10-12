@@ -3,7 +3,7 @@
 from collections.abc import Hashable, Sequence
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Self
+from typing import Annotated
 
 from pydantic import (
     BaseModel,
@@ -13,6 +13,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from typing_extensions import Self
 
 Identifier = Annotated[
     str,
@@ -197,7 +198,14 @@ class SearchArea(ContractModel):
     """Polygonal search area assigned as one indivisible unit."""
 
     area_id: Identifier
-    boundary: list[GeoCoordinate] = Field(min_length=3, max_length=100)
+    boundary: list[GeoCoordinate] = Field(
+        min_length=3,
+        max_length=100,
+        description=(
+            "Polygon vertices in perimeter order (clockwise or counter-clockwise) so edges "
+            "do not cross. Do not repeat the first vertex at the end."
+        ),
+    )
     search_altitude_m: float = Field(gt=0, le=500)
     search_altitude_reference: AltitudeReference
 

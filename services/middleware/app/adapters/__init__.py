@@ -9,6 +9,15 @@ from .ap_dds import (
     UnsupportedApDdsCommandError,
     to_ap_dds_takeoff_request,
 )
+from .drone_interface import (
+    MIN_SAFE_ALTITUDE_M,
+    DroneInterfaceClient,
+    DroneInterfaceRequest,
+    InterfaceMethod,
+    UnsafeAltitudeError,
+    UnsupportedDroneCommandError,
+    to_drone_interface_request,
+)
 from .mavlink import (
     MAVLINK_CAPABILITIES,
     MavlinkAckResult,
@@ -19,6 +28,7 @@ from .mavlink import (
     UnsupportedMavlinkCommandError,
     to_mavlink_takeoff_request,
 )
+from .telemetry import TelemetryStateMapper
 
 __all__ = [
     # AP-DDS
@@ -38,4 +48,14 @@ __all__ = [
     "MavlinkTakeoffRequest",
     "UnsupportedMavlinkCommandError",
     "to_mavlink_takeoff_request",
+    # DroneInterface (protocol-neutral simulation adapter contract)
+    "MIN_SAFE_ALTITUDE_M",
+    "DroneInterfaceClient",
+    "DroneInterfaceRequest",
+    "InterfaceMethod",
+    "UnsafeAltitudeError",
+    "UnsupportedDroneCommandError",
+    "to_drone_interface_request",
+    # Common Telemetry mapping
+    "TelemetryStateMapper",
 ]
