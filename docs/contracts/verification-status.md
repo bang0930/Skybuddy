@@ -74,7 +74,7 @@
 | 드론 이탈 (SITL 종료) | 검증 불가 | AirSim lock-step이라 SITL 하나를 끄면 시뮬레이션 전체가 멈춤 |
 | 드론 간 수직 분리 강제 | 범위 밖 | 구역 할당 계층에서 예정. 현재 아무도 강제하지 않음 |
 | Fallback, 재배정 | 범위 밖 | 9~10주차 |
-| 구역 경계 → 탐색 경로 (coverage 모듈, #30·#32) | 부분 | 파이프라인 기본 생성기로 연결(#32). FakeDrone(임시 `swath_width_m` 10m)으로만 검증. 실제 SITL은 드론별 `swath_width_m`이 정해지지 않아 미실행 |
+| 구역 경계 → 탐색 경로 (coverage 모듈, #30·#32) | 부분 | 파이프라인 기본 생성기로 연결(#32). FakeDrone(임시 `swath_width_m` 10m)으로만 검증. 실제 구성은 드론별 `swath_width_m`이 정해질 때까지 임시로 꼭짓점 순회(`vertex_traversal`)를 사용하므로 실제 SITL에서 coverage는 미실행 |
 
 ## 2. 지원 범위
 

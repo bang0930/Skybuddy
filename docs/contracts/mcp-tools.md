@@ -165,7 +165,7 @@ LLM 원본 출력과 모델 설정은 오케스트레이터에서 기록해야 �
 | 파일 | 내용 |
 |---|---|
 | `services/middleware/config/drones.fake.json` | FakeDrone 2대 (`drone-01` MAVLink, `drone-02` AP_DDS). `swath_width_m` 10m는 테스트용 **임시값** |
-| `services/middleware/config/drones.real.example.json` | 실제 SITL 연결 예시. `swath_width_m`이 없어 그대로는 시작되지 않음 (아래 참고) |
+| `services/middleware/config/drones.real.example.json` | 실제 SITL 연결 예시. `swath_width_m`이 정해질 때까지 **임시로** `vertex_traversal` 사용 (아래 참고) |
 | `services/middleware/config/scenarios/mission-001.json` | AirSim 원점 인근 20×20m 구역 2개, 탐색 고도 30m / 50m |
 
 환경 변수 `MIDDLEWARE_DRONES_CONFIG`, `MIDDLEWARE_SCENARIOS_DIR`, `MIDDLEWARE_EVENT_LOG`로
@@ -204,9 +204,10 @@ LLM 원본 출력과 모델 설정은 오케스트레이터에서 기록해야 �
 
 - `drones.fake.json`의 10m는 mission-001 구역(약 20×20m)에서 여러 줄 왕복이 생기도록 정한
   **임시값**입니다. 실제 카메라 사양에서 나온 값이 아닙니다.
-- `drones.real.example.json`에는 값을 넣지 않았습니다. 실제 SITL에서 실행하려면 카메라 화각과
-  탐색 고도로 계산한 값을 드론마다 넣거나, `"waypoints": {"generator": "vertex_traversal"}`로
-  이전 방식을 선택해야 합니다.
+- `drones.real.example.json`은 실제 값이 정해질 때까지 **임시로** `"waypoints": {"generator":
+  "vertex_traversal"}`을 지정해 이전 방식(꼭짓점 순회)으로 비행합니다. 카메라 화각과 탐색 고도로
+  계산한 `swath_width_m`을 드론마다 넣은 뒤 `waypoints` 항목을 지우면 coverage로 바뀝니다.
+  `swath_width_m` 없이 `waypoints` 항목만 지우면 서버가 시작되지 않습니다.
 - 서버 시작 시 `waypoints.max_leg_m ≤ dispatcher.waypoint_timeout_s × min_ground_speed_m_s`
   (기본 60초 × 2.0m/s = 120m)인지 검사하고, 어긋나면 시작하지 않습니다. 구역 안의 한 구간은 가장
   느린 속도로도 구간 기본 제한 시간 안에 끝나야 한다는 조건입니다.
@@ -299,7 +300,8 @@ FakeDrone으로 확인할 때는 `MIDDLEWARE_DRONES_CONFIG`를 지정하지 않�
 
 | 임시 구현 | 위치 | 교체 대상 |
 |---|---|---|
-| FakeDrone `swath_width_m` 10m | `config/drones.fake.json` | 시뮬레이션 카메라 화각과 탐색 고도로 계산한 드론별 값. 실제 구성(`drones.real.example.json`)에는 아직 값이 없음 |
+| FakeDrone `swath_width_m` 10m | `config/drones.fake.json` | 시뮬레이션 카메라 화각과 탐색 고도로 계산한 드론별 값 |
+| 실제 구성의 `vertex_traversal` 지정 | `config/drones.real.example.json`의 `waypoints` | 드론별 `swath_width_m`을 넣고 `waypoints` 항목을 지워 coverage 사용 |
 | 드론별 고정 `swath_width_m` | `runtime/registry.py`의 `DroneConfig` | 촬영 폭은 탐색 고도에 비례하므로 구역 고도가 다르면 값도 달라야 함. 화각을 받아 구역 고도로 계산하는 방식 |
 | `goto(home)` 귀환 | `runtime/planning.py`의 `build_mission_task()` | `DroneInterface.return_home()`. 클라이언트에 메서드가 생기면 capabilities에 `return_home`이 자동 추가되어 그 명령을 사용합니다. |
 | FakeDrone | `runtime/fake_drone.py`, `registry.py`의 `ClientFactory` | 시뮬레이션 파트의 정식 FakeDrone |

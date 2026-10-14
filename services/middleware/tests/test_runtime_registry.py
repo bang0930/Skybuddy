@@ -237,11 +237,18 @@ def test_coverage_requires_swath_width_for_every_drone() -> None:
     assert RegistryConfig.model_validate(config).drones[1].swath_width_m is None
 
 
-def test_real_example_config_must_be_given_swath_widths() -> None:
-    # Only the FakeDrone file carries (temporary) swath widths; real drones need theirs.
+def test_real_example_config_keeps_vertex_traversal_until_swath_is_known() -> None:
+    # TEMPORARY: real drones have no measured swath width yet, so the example flies the
+    # earlier vertex traversal. Switching it to coverage must demand swath widths.
     path = Path(__file__).resolve().parents[1] / "config" / "drones.real.example.json"
+    config = RegistryConfig.load(path)
+    assert config.waypoints.generator == "vertex_traversal"
+    assert all(drone.swath_width_m is None for drone in config.drones)
+
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    del raw["waypoints"]
     with pytest.raises(ValidationError, match="swath_width_m"):
-        RegistryConfig.load(path)
+        RegistryConfig.model_validate(raw)
 
 
 def test_max_leg_must_fit_the_waypoint_timeout() -> None:
