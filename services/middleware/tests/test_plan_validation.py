@@ -2,10 +2,15 @@
 
 from datetime import datetime, timezone
 
-from conftest import plan, scenario
+from conftest import SWATH_WIDTH_M, plan, scenario
 
 from app.adapters import AP_DDS_CAPABILITIES
-from app.runtime import build_mission_task, validate_plan
+from app.runtime import (
+    CoverageGenerator,
+    VertexTraversalGenerator,
+    build_mission_task,
+    validate_plan,
+)
 from app.schemas import (
     DroneCapabilities,
     DroneCommandType,
@@ -106,12 +111,39 @@ def test_rejects_area_below_safe_altitude_or_with_msl_reference(registry) -> Non
     assert codes(issues) == ["ALTITUDE_BELOW_MINIMUM", "UNSUPPORTED_ALTITUDE_REFERENCE"]
 
 
+def test_rejects_self_intersecting_boundary_in_validation(registry) -> None:
+    areas = [area.model_dump() for area in scenario().search_areas]
+    north = areas[0]["boundary"]
+    # Square corners listed diagonally: the edges cross in the middle.
+    areas[0]["boundary"] = [
+        north[0],
+        north[2],
+        north[1],
+        {"latitude": north[2]["latitude"], "longitude": north[0]["longitude"]},
+    ]
+
+    accepted, issues = validate_plan(
+        plan(("drone-01", "area-north"), ("drone-02", "area-south")),
+        context(registry, search_areas=areas),
+    )
+
+    assert accepted is None
+    assert codes(issues) == ["INVALID_AREA_BOUNDARY"]
+    assert issues[0].location == "assignments.0.area_id"
+    assert "Self-intersection" in issues[0].message
+
+
 def test_builds_ordered_task_with_temporary_goto_home(registry) -> None:
     drone = registry.state("drone-01")
     area = scenario().search_areas[0]
 
     task = build_mission_task(
-        task_id="task-001", mission_id="mission-001", drone=drone, area=area, created_at=NOW
+        task_id="task-001",
+        mission_id="mission-001",
+        drone=drone,
+        area=area,
+        created_at=NOW,
+        generator=VertexTraversalGenerator(),
     )
 
     types = [command.payload.command_type.value for command in task.commands]
@@ -146,5 +178,7 @@ def test_uses_return_home_when_drone_supports_it(registry) -> None:
         drone=drone,
         area=scenario().search_areas[0],
         created_at=NOW,
+        generator=CoverageGenerator(),
+        swath_width_m=SWATH_WIDTH_M,
     )
     assert isinstance(task.commands[-2].payload, ReturnHomePayload)

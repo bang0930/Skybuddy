@@ -15,7 +15,7 @@
   ▼
 MCP 서버 ── MissionService
               ├ 계획 검증 (planning.validate_plan)
-              ├ MissionTask 생성 (planning.build_mission_task)
+              ├ 웨이포인트 생성·검사, MissionTask 생성 (planning.build_mission_tasks)
               └ Dispatcher ── 드론별 스레드
                                └ DroneInterface 변환 (adapters.drone_interface)
                                    └ DroneRegistry ── FakeDrone | MavlinkDrone | Ros2Drone
@@ -54,6 +54,12 @@ MCP 서버 ── MissionService
 | `COMMAND_NOT_SUPPORTED` | `takeoff`·`goto`·`land` 중 미지원 명령 존재 |
 | `UNSUPPORTED_ALTITUDE_REFERENCE` | 구역 탐색 고도가 `home_relative`가 아님 |
 | `ALTITUDE_BELOW_MINIMUM` | 구역 탐색 고도가 최소 안전 고도 30m 미만 |
+| `INVALID_AREA_BOUNDARY` | 구역 경계가 단순 다각형이 아님 (변끼리 교차하는 꼭짓점 순서 등). 메시지에 shapely의 판정 이유 포함 |
+| `WAYPOINT_CHECK_FAILED` | 생성된 구역 경로가 검사를 통과하지 못함 (경계 밖 점, 탐색 고도와 다른 고도, `max_leg_m`보다 긴 구간, 생성 실패). 생성기 결함이므로 LLM이 고칠 수 있는 오류는 아님 |
+
+`INVALID_AREA_BOUNDARY`까지는 `validate_plan`이 검사하고, `WAYPOINT_CHECK_FAILED`는 그다음
+MissionTask를 만들 때 검사합니다. 둘 다 명령을 하나도 보내기 전에 계획 전체를 `rejected`로
+돌려보냅니다.
 
 ### 임무 상태
 
@@ -98,6 +104,26 @@ MCP 서버 ── MissionService
 takeoff(탐색 고도) → goto(구역 웨이포인트) × N → 귀환 → land
 ```
 
+구역 웨이포인트는 설정한 생성기(`runtime/waypoints.py`의 `WaypointGenerator`)가 만듭니다.
+
+| 생성기 | `waypoints.generator` | 경로 | 필요한 값 |
+|---|---|---|---|
+| `CoverageGenerator` (기본) | `coverage` | `runtime/coverage.py`의 왕복(boustrophedon) 경로. 줄 간격은 `swath_width_m × (1 − side_overlap)` | 드론별 `swath_width_m` |
+| `VertexTraversalGenerator` | `vertex_traversal` | 이전 임시 방식. 꼭짓점을 순서대로 돌고 첫 꼭짓점으로 돌아옴 | 없음 |
+
+- 두 생성기 모두 인접 웨이포인트 사이가 `max_leg_m`(기본 100m)보다 길면 같은 간격으로 나눕니다.
+  꼭짓점 순회는 변이 100m 이하인 구역에서 이전과 같은 경로입니다.
+- 만든 경로는 명령으로 바꾸기 전에 검사합니다. 모든 점이 구역 경계 안 또는 경계 위(좌표 반올림
+  허용 오차 0.05m)에 있고, 고도가 구역 탐색 고도·`home_relative`와 같고, 인접 점 사이가
+  `max_leg_m` 이하여야 합니다. 홈 → 구역, 구역 → 홈 구간은 검사 대상이 아닙니다.
+- 생성 결과는 입력으로만 정해집니다. 같은 `MissionContext`와 `MissionPlan`이면 시각 필드를 뺀
+  웨이포인트, MissionTask, `command_id` 순서, 명령 payload가 같습니다(`tests/test_waypoints.py`).
+  `task_id` 번호는 서버가 시작된 뒤 수락한 작업 순서로 매기므로, 같은 계획이라도 서버를 다시
+  시작하지 않고 두 번 제출하면 번호가 달라집니다.
+- mission-001(FakeDrone, 임시 `swath_width_m` 10m)에서 드론별 명령은 8개 → 9개입니다. 구역마다
+  꼭짓점 5개(둘레 80m) 대신 3줄 왕복 6개(70m)를 돌며, 홈 왕복을 포함한 수평 이동 거리는
+  drone-01 113m → 124m, drone-02 154m → 124m입니다.
+
 | 명령 | `DroneInterface` 호출 | 결과 상태 |
 |---|---|---|
 | `takeoff` | `takeoff(alt)` — 목표 고도 95% 도달 후 반환 | `sent → succeeded` |
@@ -123,7 +149,7 @@ takeoff(탐색 고도) → goto(구역 웨이포인트) × N → 귀환 → land
 
 | event | 주요 필드 |
 |---|---|
-| `server_started` | 드론 구성, 연결 문자열, 연결 여부와 실패 이유, binding, Dispatcher 설정, 로드된 임무 |
+| `server_started` | 드론 구성, 연결 문자열, 연결 여부와 실패 이유, binding, Dispatcher 설정, 웨이포인트 설정(`waypoints`: 생성기, `side_overlap`, `max_leg_m`, 드론별 `swath_width_m`), 로드된 임무 |
 | `plan_submitted` | 제출 원본 `plan`, `attempt`(해당 임무 누적 제출 횟수), `generated_at_filled_by_server` |
 | `plan_rejected` | `errors` |
 | `plan_accepted` | 작업 목록, 생성된 명령 전체 |
@@ -138,8 +164,8 @@ LLM 원본 출력과 모델 설정은 오케스트레이터에서 기록해야 �
 
 | 파일 | 내용 |
 |---|---|
-| `services/middleware/config/drones.fake.json` | FakeDrone 2대 (`drone-01` MAVLink, `drone-02` AP_DDS) |
-| `services/middleware/config/drones.real.example.json` | 실제 SITL 연결 예시 (미검증) |
+| `services/middleware/config/drones.fake.json` | FakeDrone 2대 (`drone-01` MAVLink, `drone-02` AP_DDS). `swath_width_m` 10m는 테스트용 **임시값** |
+| `services/middleware/config/drones.real.example.json` | 실제 SITL 연결 예시. `swath_width_m`이 없어 그대로는 시작되지 않음 (아래 참고) |
 | `services/middleware/config/scenarios/mission-001.json` | AirSim 원점 인근 20×20m 구역 2개, 탐색 고도 30m / 50m |
 
 환경 변수 `MIDDLEWARE_DRONES_CONFIG`, `MIDDLEWARE_SCENARIOS_DIR`, `MIDDLEWARE_EVENT_LOG`로
@@ -155,6 +181,35 @@ LLM 원본 출력과 모델 설정은 오케스트레이터에서 기록해야 �
   "min_ground_speed_m_s": 2.0
 }
 ```
+
+`waypoints` 항목으로 웨이포인트 생성 방식을 고릅니다. 생략하면 아래 기본값입니다.
+`side_overlap`과 `max_leg_m`의 기본값은 `generate_coverage_waypoints()`의 기본값과 같습니다.
+
+```json
+"waypoints": {
+  "generator": "coverage",
+  "side_overlap": 0.2,
+  "max_leg_m": 100.0
+}
+```
+
+`swath_width_m`(한 줄이 탐색 고도에서 덮는 지면 폭, m)은 드론 항목마다 적습니다. 코드에 기본값이
+없으며, `coverage` 생성기를 쓸 때 하나라도 빠져 있으면 구성 파일을 읽는 단계에서 서버가 시작되지
+않습니다. `vertex_traversal`에서는 쓰지 않습니다.
+
+```json
+{"drone_id": "drone-01", "protocol": "mavlink", "mode": "real",
+ "connection_string": "udpin:127.0.0.1:14561", "swath_width_m": 10.0}
+```
+
+- `drones.fake.json`의 10m는 mission-001 구역(약 20×20m)에서 여러 줄 왕복이 생기도록 정한
+  **임시값**입니다. 실제 카메라 사양에서 나온 값이 아닙니다.
+- `drones.real.example.json`에는 값을 넣지 않았습니다. 실제 SITL에서 실행하려면 카메라 화각과
+  탐색 고도로 계산한 값을 드론마다 넣거나, `"waypoints": {"generator": "vertex_traversal"}`로
+  이전 방식을 선택해야 합니다.
+- 서버 시작 시 `waypoints.max_leg_m ≤ dispatcher.waypoint_timeout_s × min_ground_speed_m_s`
+  (기본 60초 × 2.0m/s = 120m)인지 검사하고, 어긋나면 시작하지 않습니다. 구역 안의 한 구간은 가장
+  느린 속도로도 구간 기본 제한 시간 안에 끝나야 한다는 조건입니다.
 
 연결에 실패한 드론이 있어도 서버는 시작합니다. 실패한 드론은 텔레메트리 없이 등록되어
 `disconnected`로 보고되고, 계획 검증에서 `DRONE_DISCONNECTED`로 거부됩니다. 실패 이유는
@@ -244,7 +299,8 @@ FakeDrone으로 확인할 때는 `MIDDLEWARE_DRONES_CONFIG`를 지정하지 않�
 
 | 임시 구현 | 위치 | 교체 대상 |
 |---|---|---|
-| 구역 꼭짓점 순회 웨이포인트 | `runtime/planning.py`의 `area_waypoints()` | boundary → 웨이포인트 경로 생성 함수 (#26 진행 중, 담당 정리 필요) |
+| FakeDrone `swath_width_m` 10m | `config/drones.fake.json` | 시뮬레이션 카메라 화각과 탐색 고도로 계산한 드론별 값. 실제 구성(`drones.real.example.json`)에는 아직 값이 없음 |
+| 드론별 고정 `swath_width_m` | `runtime/registry.py`의 `DroneConfig` | 촬영 폭은 탐색 고도에 비례하므로 구역 고도가 다르면 값도 달라야 함. 화각을 받아 구역 고도로 계산하는 방식 |
 | `goto(home)` 귀환 | `runtime/planning.py`의 `build_mission_task()` | `DroneInterface.return_home()`. 클라이언트에 메서드가 생기면 capabilities에 `return_home`이 자동 추가되어 그 명령을 사용합니다. |
 | FakeDrone | `runtime/fake_drone.py`, `registry.py`의 `ClientFactory` | 시뮬레이션 파트의 정식 FakeDrone |
 

@@ -137,10 +137,20 @@ def build_service_from_env() -> MissionService:
         drones_config=str(config_path),
         missions=[scenario.mission_id for scenario in scenarios],
         dispatcher=config.dispatcher,
+        waypoints={
+            **config.waypoints.model_dump(mode="json"),
+            "swath_width_m": {drone.drone_id: drone.swath_width_m for drone in config.drones},
+        },
         drones=[handle.describe() for handle in registry.handles()],
     )
     dispatcher = Dispatcher(registry, event_log, config=config.dispatcher)
-    return MissionService(registry, scenarios, dispatcher, event_log)
+    return MissionService(
+        registry,
+        scenarios,
+        dispatcher,
+        event_log,
+        waypoint_generator=config.waypoints.build_generator(),
+    )
 
 
 def main() -> None:

@@ -14,7 +14,6 @@ from app.schemas import (
     DroneCommandType,
     DroneState,
     DroneStatus,
-    GeoCoordinate,
     GeoPosition,
     GotoPayload,
     LandPayload,
@@ -26,6 +25,8 @@ from app.schemas import (
     TakeoffPayload,
     ValidationIssue,
 )
+
+from .waypoints import WaypointCheckError, WaypointGenerator, boundary_problem, path_problems
 
 # Commands every assigned drone must support to fly takeoff -> area -> home -> land.
 REQUIRED_COMMANDS = (
@@ -91,13 +92,51 @@ def validate_plan(
     return (plan if not issues else None), issues
 
 
-def area_waypoints(area: SearchArea) -> list[GeoCoordinate]:
-    """TEMPORARY: fly the polygon perimeter and close the loop at the first vertex.
+def build_mission_tasks(
+    plan: MissionPlan,
+    context: MissionContext,
+    *,
+    generator: WaypointGenerator,
+    swath_widths: Mapping[str, float | None],
+    first_task_number: int,
+    created_at: datetime,
+) -> tuple[list[tuple[MissionTask, str]], list[ValidationIssue]]:
+    """Build one task per assignment of a validated plan, higher priority first.
 
-    Replace with the simulation part's boundary -> waypoint function (coverage pattern)
-    once it exists. This stand-in only visits the boundary vertices in order.
+    Apart from ``created_at`` the result depends only on the arguments, so the same plan
+    and context always give the same waypoints, command IDs, and payloads. An area path
+    that fails its checks is returned as a ``WAYPOINT_CHECK_FAILED`` issue, not a task.
     """
-    return [*area.boundary, area.boundary[0]]
+    drones = {drone.drone_id: drone for drone in context.drones}
+    areas = {area.area_id: area for area in context.search_areas}
+    planned: list[tuple[MissionTask, str]] = []
+    issues: list[ValidationIssue] = []
+    ordered = sorted(enumerate(plan.assignments), key=lambda item: -item[1].priority)
+    for number, (index, assignment) in enumerate(ordered, first_task_number):
+        try:
+            task = build_mission_task(
+                task_id=f"task-{number:03d}-{assignment.drone_id}",
+                mission_id=plan.mission_id,
+                drone=drones[assignment.drone_id],
+                area=areas[assignment.area_id],
+                created_at=created_at,
+                generator=generator,
+                swath_width_m=swath_widths.get(assignment.drone_id),
+            )
+        except WaypointCheckError as exc:
+            issues.append(
+                ValidationIssue(
+                    code="WAYPOINT_CHECK_FAILED",
+                    message=(
+                        f"{generator.name} path of {assignment.area_id} for "
+                        f"{assignment.drone_id} cannot be flown: {exc}"
+                    )[:2_000],
+                    location=f"assignments.{index}.area_id",
+                )
+            )
+            continue
+        planned.append((task, assignment.area_id))
+    return planned, issues
 
 
 def build_mission_task(
@@ -107,22 +146,38 @@ def build_mission_task(
     drone: DroneState,
     area: SearchArea,
     created_at: datetime,
+    generator: WaypointGenerator,
+    swath_width_m: float | None = None,
 ) -> MissionTask:
-    """Build takeoff -> goto x N -> return -> land for one drone and one area."""
+    """Build takeoff -> goto x N -> return -> land for one drone and one area.
+
+    Raises ``WaypointCheckError`` when the generator fails or its path leaves the area,
+    leaves the search altitude, or has a leg longer than ``generator.max_leg_m``.
+    """
     if drone.position is None:
         raise ValueError(f"{drone.drone_id} has no known home position")
     altitude = area.search_altitude_m
     home = drone.position
+
+    try:
+        waypoints = generator.generate(area, swath_width_m=swath_width_m)
+    except ValueError as exc:
+        raise WaypointCheckError([f"waypoint generation failed: {exc}"]) from exc
+    area_legs = [_goto(point.latitude, point.longitude, altitude) for point in waypoints]
+    problems = path_problems(
+        area, [leg.target for leg in area_legs], max_leg_m=generator.max_leg_m
+    )
+    if problems:
+        raise WaypointCheckError(problems)
 
     payloads: list[Any] = [
         TakeoffPayload(
             command_type=DroneCommandType.TAKEOFF,
             altitude_m=altitude,
             altitude_reference=AltitudeReference.HOME_RELATIVE,
-        )
+        ),
+        *area_legs,
     ]
-    for waypoint in area_waypoints(area):
-        payloads.append(_goto(waypoint.latitude, waypoint.longitude, altitude))
     if DroneCommandType.RETURN_HOME in drone.capabilities.commands:
         payloads.append(ReturnHomePayload(command_type=DroneCommandType.RETURN_HOME))
     else:
@@ -208,6 +263,18 @@ def _drone_issues(drone: DroneState, location: str) -> list[ValidationIssue]:
 
 def _area_issues(area: SearchArea, location: str) -> list[ValidationIssue]:
     issues = []
+    problem = boundary_problem(area)
+    if problem is not None:
+        issues.append(
+            ValidationIssue(
+                code="INVALID_AREA_BOUNDARY",
+                message=(
+                    f"{area.area_id} boundary is not a simple polygon ({problem}); its "
+                    f"vertices must follow the perimeter so that edges do not cross"
+                ),
+                location=f"{location}.area_id",
+            )
+        )
     if area.search_altitude_reference != AltitudeReference.HOME_RELATIVE:
         issues.append(
             ValidationIssue(

@@ -1,8 +1,18 @@
 """Tunable runtime settings read from the registry configuration file."""
 
+from typing import Literal
+
 from pydantic import Field
 
 from app.schemas.mission import ContractModel
+
+from .waypoints import (
+    DEFAULT_MAX_LEG_M,
+    DEFAULT_SIDE_OVERLAP,
+    CoverageGenerator,
+    VertexTraversalGenerator,
+    WaypointGenerator,
+)
 
 
 class DispatcherConfig(ContractModel):
@@ -35,3 +45,33 @@ class DispatcherConfig(ContractModel):
         if distance_m is None:
             return self.waypoint_timeout_s
         return max(self.waypoint_timeout_s, distance_m / self.min_ground_speed_m_s)
+
+
+class WaypointConfig(ContractModel):
+    """How each search area becomes waypoints.
+
+    The coverage generator also needs every drone's ``swath_width_m`` (drone entry of
+    the same file). ``RegistryConfig`` checks that and the ``max_leg_m`` limit at load.
+    """
+
+    generator: Literal["coverage", "vertex_traversal"] = Field(
+        default="coverage",
+        description="coverage: back-and-forth rows; vertex_traversal: earlier stand-in.",
+    )
+    side_overlap: float = Field(
+        default=DEFAULT_SIDE_OVERLAP,
+        ge=0,
+        lt=1,
+        description="Overlap between neighboring coverage rows (coverage only).",
+    )
+    max_leg_m: float = Field(
+        default=DEFAULT_MAX_LEG_M,
+        gt=0,
+        le=10_000,
+        description="Longest leg between neighboring area waypoints (m).",
+    )
+
+    def build_generator(self) -> WaypointGenerator:
+        if self.generator == "vertex_traversal":
+            return VertexTraversalGenerator(max_leg_m=self.max_leg_m)
+        return CoverageGenerator(side_overlap=self.side_overlap, max_leg_m=self.max_leg_m)

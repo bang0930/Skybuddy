@@ -220,3 +220,48 @@ def test_dispatcher_settings_load_from_registry_config() -> None:
     defaults = fast_registry_config().dispatcher
     assert (defaults.waypoint_timeout_s, defaults.reach_threshold_m,
             defaults.min_ground_speed_m_s) == (60, 3, 2.0)
+
+
+def _config_with(**sections) -> dict:
+    return json.loads(fast_registry_config().model_dump_json()) | sections
+
+
+def test_coverage_requires_swath_width_for_every_drone() -> None:
+    config = _config_with()
+    del config["drones"][1]["swath_width_m"]
+
+    with pytest.raises(ValidationError, match=r"swath_width_m .*missing: \['drone-02'\]"):
+        RegistryConfig.model_validate(config)
+    # The earlier vertex traversal does not use it.
+    config["waypoints"] = {"generator": "vertex_traversal"}
+    assert RegistryConfig.model_validate(config).drones[1].swath_width_m is None
+
+
+def test_real_example_config_must_be_given_swath_widths() -> None:
+    # Only the FakeDrone file carries (temporary) swath widths; real drones need theirs.
+    path = Path(__file__).resolve().parents[1] / "config" / "drones.real.example.json"
+    with pytest.raises(ValidationError, match="swath_width_m"):
+        RegistryConfig.load(path)
+
+
+def test_max_leg_must_fit_the_waypoint_timeout() -> None:
+    # 60 s x 2.0 m/s = 120 m by default.
+    assert RegistryConfig.model_validate(_config_with(waypoints={"max_leg_m": 120}))
+    with pytest.raises(ValidationError, match="exceeds dispatcher.waypoint_timeout_s"):
+        RegistryConfig.model_validate(_config_with(waypoints={"max_leg_m": 121}))
+    with pytest.raises(ValidationError, match="exceeds"):
+        RegistryConfig.model_validate(
+            _config_with(dispatcher={"waypoint_timeout_s": 30, "min_ground_speed_m_s": 2})
+        )
+
+
+def test_waypoint_settings_load_from_registry_config() -> None:
+    config = RegistryConfig.model_validate(
+        _config_with(waypoints={"side_overlap": 0.3, "max_leg_m": 80})
+    )
+    assert (config.waypoints.generator, config.waypoints.side_overlap,
+            config.waypoints.max_leg_m) == ("coverage", 0.3, 80)
+    bundled = RegistryConfig.load(
+        Path(__file__).resolve().parents[1] / "config" / "drones.fake.json"
+    )
+    assert [drone.swath_width_m for drone in bundled.drones] == [10.0, 10.0]
