@@ -131,23 +131,13 @@ def build_service_from_env() -> MissionService:
         raise RuntimeError(f"no mission scenario JSON found in {scenarios_dir}")
     event_log = EventLog(event_log_path)
     # Drones that fail to connect stay registered as disconnected; the server still starts.
-    connect_errors = registry.connect_all()
+    registry.connect_all()
     event_log.write(
         "server_started",
         drones_config=str(config_path),
         missions=[scenario.mission_id for scenario in scenarios],
         dispatcher=config.dispatcher,
-        drones=[
-            {
-                "drone_id": handle.drone_id,
-                "protocol": handle.protocol,
-                "mode": handle.config.mode,
-                "connected": handle.connected,
-                "connect_error": connect_errors.get(handle.drone_id),
-                "binding": handle.binding,
-            }
-            for handle in registry.handles()
-        ],
+        drones=[handle.describe() for handle in registry.handles()],
     )
     dispatcher = Dispatcher(registry, event_log, config=config.dispatcher)
     return MissionService(registry, scenarios, dispatcher, event_log)

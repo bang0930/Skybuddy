@@ -57,7 +57,7 @@ class CommandTracker:
         self,
         command: DroneCommand,
         *,
-        on_transition: Callable[[CommandResult, float | None], None],
+        on_transition: Callable[[CommandResult, float | None, dict | None], None],
     ) -> None:
         self.command = command
         self.status = CommandStatus.PENDING
@@ -67,8 +67,13 @@ class CommandTracker:
         self._lock = threading.Lock()
 
     def transition(
-        self, status: CommandStatus, error: CommandError | None = None
+        self,
+        status: CommandStatus,
+        error: CommandError | None = None,
+        *,
+        target: dict | None = None,
     ) -> CommandResult:
+        """Record a transition. ``target`` names the client actually invoked (on ``sent``)."""
         with self._lock:
             # CommandResult rejects transitions the contract does not allow.
             result = CommandResult(
@@ -86,7 +91,7 @@ class CommandTracker:
             elapsed = None if self._sent_at is None else now - self._sent_at
             self.status = status
             self.history.append(result)
-        self._on_transition(result, elapsed)
+        self._on_transition(result, elapsed, target)
         return result
 
     def fail(self, code: str, message: str, *, retryable: bool = False) -> None:
@@ -224,7 +229,9 @@ class Dispatcher:
                     start["lat"], start["lon"], request.latitude, request.longitude
                 )
 
-        tracker.transition(CommandStatus.SENT)
+        # Log which registered client receives the call, so mixed-up identifiers are
+        # visible in the event log rather than only in the vehicle's behaviour.
+        tracker.transition(CommandStatus.SENT, target=handle.identity())
         try:
             with handle.exclusive():
                 outcome = request.invoke(handle.client)
@@ -298,10 +305,12 @@ class Dispatcher:
                 handle.client.disarm()
         self.event_log.write("emergency_stop", drone_id=drone_id, landed=landed)
 
-    def _logger(self, task: MissionTask) -> Callable[[CommandResult, float | None], None]:
+    def _logger(
+        self, task: MissionTask
+    ) -> Callable[[CommandResult, float | None, dict | None], None]:
         types = {command.command_id: command.payload.command_type for command in task.commands}
 
-        def log(result: CommandResult, elapsed_s: float | None) -> None:
+        def log(result: CommandResult, elapsed_s: float | None, target: dict | None) -> None:
             self.event_log.write(
                 "command_transition",
                 mission_id=task.mission_id,
@@ -315,6 +324,7 @@ class Dispatcher:
                 updated_at=result.updated_at,
                 elapsed_since_sent_s=None if elapsed_s is None else round(elapsed_s, 3),
                 error=result.error,
+                **({} if target is None else {"target": target}),
             )
 
         return log
