@@ -74,7 +74,7 @@
 | 드론 이탈 (SITL 종료) | 검증 불가 | AirSim lock-step이라 SITL 하나를 끄면 시뮬레이션 전체가 멈춤 |
 | 드론 간 수직 분리 강제 | 범위 밖 | 구역 할당 계층에서 예정. 현재 아무도 강제하지 않음 |
 | Fallback, 재배정 | 범위 밖 | 9~10주차 |
-| 구역 경계 → 탐색 경로 (coverage 모듈, #30) | 부분 | 모듈 단위 테스트만 있음. 파이프라인은 아직 꼭짓점 순회(`area_waypoints()`)를 사용 |
+| 구역 경계 → 탐색 경로 (coverage 모듈, #30·#32) | 부분 | 파이프라인 기본 생성기로 연결(#32). FakeDrone(임시 `swath_width_m` 10m)으로만 검증. 실제 구성은 드론별 `swath_width_m`이 정해질 때까지 임시로 꼭짓점 순회(`vertex_traversal`)를 사용하므로 실제 SITL에서 coverage는 미실행 |
 
 ## 2. 지원 범위
 
@@ -101,7 +101,7 @@
 | ardupilot_msgs, Micro XRCE-DDS Agent | ArduPilot 4.7.1 소스 빌드, UDP 2019 | `INTERFACE.md` 0-1 |
 | mcp, fastmcp | `mcp>=1.29,<2.0`, `fastmcp>=3.4,<4.0` | Python 3.10 이상 지원 |
 | pydantic | `>=2.10,<3.0` | |
-| shapely | `>=2.0,<3.0` | 최신 2.2는 Python 3.11 이상이 필요하므로 3.10에서는 pip가 2.1.x를 설치해야 함. 서버 런타임은 shapely를 import하지 않고 테스트(`test_coverage.py`)만 사용 |
+| shapely | `>=2.0,<3.0` | 최신 2.2는 Python 3.11 이상이 필요하므로 3.10에서는 pip가 2.1.x를 설치해야 함. #32부터 서버 런타임(`runtime/waypoints.py`, `runtime/coverage.py`)이 import하므로 실제 모드의 시스템 Python 3.10에도 설치되어 있어야 함 (3.10 + shapely 2.1.x 조합은 미검증) |
 
 ## 4. 알려진 실패 지점
 

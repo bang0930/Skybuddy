@@ -24,8 +24,9 @@ from app.schemas.mission import ContractModel, Identifier, _require_unique
 
 from .dispatcher import Dispatcher, TaskExecution
 from .event_log import EventLog
-from .planning import build_mission_task, validate_plan
+from .planning import build_mission_tasks, validate_plan
 from .registry import DroneRegistry
+from .waypoints import CoverageGenerator, WaypointGenerator
 
 
 class MissionScenario(ContractModel):
@@ -61,11 +62,14 @@ class MissionService:
         scenarios: list[MissionScenario],
         dispatcher: Dispatcher,
         event_log: EventLog,
+        *,
+        waypoint_generator: WaypointGenerator | None = None,
     ) -> None:
         self.registry = registry
         self.scenarios = {scenario.mission_id: scenario for scenario in scenarios}
         self.dispatcher = dispatcher
         self.event_log = event_log
+        self.waypoint_generator = waypoint_generator or CoverageGenerator()
         self._lock = threading.Lock()
         self._attempts: dict[str, int] = {}
         self._executions: dict[str, list[TaskExecution]] = {}
@@ -123,21 +127,21 @@ class MissionService:
             if plan is None:
                 return self._reject(mission_id, attempt, issues)
 
-            drones = {drone.drone_id: drone for drone in context.drones}
-            areas = {area.area_id: area for area in context.search_areas}
-            created_at = datetime.now(timezone.utc)
-            planned = []
             # Higher priority starts first; drones then fly concurrently.
-            for assignment in sorted(plan.assignments, key=lambda a: -a.priority):
-                self._task_sequence += 1
-                task = build_mission_task(
-                    task_id=f"task-{self._task_sequence:03d}-{assignment.drone_id}",
-                    mission_id=plan.mission_id,
-                    drone=drones[assignment.drone_id],
-                    area=areas[assignment.area_id],
-                    created_at=created_at,
-                )
-                planned.append((task, assignment.area_id))
+            planned, issues = build_mission_tasks(
+                plan,
+                context,
+                generator=self.waypoint_generator,
+                swath_widths={
+                    handle.drone_id: handle.config.swath_width_m
+                    for handle in self.registry.handles()
+                },
+                first_task_number=self._task_sequence + 1,
+                created_at=datetime.now(timezone.utc),
+            )
+            if issues:
+                return self._reject(mission_id, attempt, issues)
+            self._task_sequence += len(planned)
 
             accepted = [
                 AcceptedTask(

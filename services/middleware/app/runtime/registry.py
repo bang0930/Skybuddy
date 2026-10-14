@@ -42,7 +42,7 @@ from app.schemas import (
 )
 from app.schemas.mission import ContractModel, Identifier, _require_unique
 
-from .config import DispatcherConfig
+from .config import DispatcherConfig, WaypointConfig
 from .fake_drone import FakeDrone
 
 logger = logging.getLogger(__name__)
@@ -77,6 +77,15 @@ class DroneConfig(ContractModel):
         description="pymavlink string (udpin:127.0.0.1:14561) or ros2:<namespace>.",
     )
     fake: FakeDroneOptions | None = None
+    swath_width_m: float | None = Field(
+        default=None,
+        gt=0,
+        le=1_000,
+        description=(
+            "Ground width one coverage row images at search altitude (m). Required by the "
+            "coverage waypoint generator; there is deliberately no default."
+        ),
+    )
 
     @model_validator(mode="after")
     def mode_options_must_match(self) -> Self:
@@ -95,6 +104,7 @@ class RegistryConfig(ContractModel):
         description="Directory containing mavlink_drone.py and ros2_drone.py (real mode).",
     )
     dispatcher: DispatcherConfig = Field(default_factory=DispatcherConfig)
+    waypoints: WaypointConfig = Field(default_factory=WaypointConfig)
 
     @model_validator(mode="after")
     def drone_ids_must_be_unique(self) -> Self:
@@ -102,6 +112,24 @@ class RegistryConfig(ContractModel):
             [drone.drone_id for drone in self.drones],
             "drones must have unique drone_id values",
         )
+        return self
+
+    @model_validator(mode="after")
+    def waypoint_settings_must_fit(self) -> Self:
+        """Fail at server start rather than when a plan is built or flown."""
+        if self.waypoints.generator == "coverage":
+            missing = [drone.drone_id for drone in self.drones if drone.swath_width_m is None]
+            if missing:
+                raise ValueError(
+                    f"coverage waypoints require swath_width_m for every drone; missing: {missing}"
+                )
+        # Each area leg must fit in the base per-waypoint limit at the slowest speed.
+        reachable = self.dispatcher.waypoint_timeout_s * self.dispatcher.min_ground_speed_m_s
+        if self.waypoints.max_leg_m > reachable:
+            raise ValueError(
+                f"waypoints.max_leg_m {self.waypoints.max_leg_m}m exceeds "
+                f"dispatcher.waypoint_timeout_s x min_ground_speed_m_s = {reachable}m"
+            )
         return self
 
     @classmethod

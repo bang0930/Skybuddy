@@ -1,6 +1,7 @@
 {
   "telemetry_timeout_s": 3.0,
   "simulation_app_path": null,
+  "waypoints": {"generator": "vertex_traversal"},
   "drones": [
     {
       "drone_id": "drone-01",

@@ -15,6 +15,7 @@ from app.runtime import (
 )
 
 HOME_LAT = -35.363261
+SWATH_WIDTH_M = 10.0
 
 
 def fast_registry_config(**overrides) -> RegistryConfig:
@@ -31,6 +32,7 @@ def fast_registry_config(**overrides) -> RegistryConfig:
                 "drone_id": "drone-01",
                 "protocol": "mavlink",
                 "mode": "fake",
+                "swath_width_m": SWATH_WIDTH_M,
                 "fake": {
                     "home": {"latitude": HOME_LAT, "longitude": 149.165197},
                     "system_id": 7,
@@ -41,6 +43,7 @@ def fast_registry_config(**overrides) -> RegistryConfig:
                 "drone_id": "drone-02",
                 "protocol": "ap_dds",
                 "mode": "fake",
+                "swath_width_m": SWATH_WIDTH_M,
                 "fake": {"home": {"latitude": HOME_LAT, "longitude": 149.165263}, **fake},
             },
         ],
