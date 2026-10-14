@@ -86,7 +86,8 @@ MCP 서버 ── MissionService
 - 어댑터의 `takeoff()`가 고도 도달을 기다리며 내부에서 읽는 텔레메트리도 캐시에 반영됩니다.
   다만 실제 `MavlinkDrone.takeoff()`의 시동·GUIDED 전환 대기(최대 30초)나 `land()`의 시동
   해제 대기(고도 1m당 4초, 최소 60초)처럼 텔레메트리를 읽지 않는 구간에는 `disconnected`로
-  보일 수 있습니다. 명령 실행 중 연결 판정 방식은 실환경 검증 때 함께 정리해야 합니다.
+  보일 수 있습니다. FakeDrone의 `land()`도 텔레메트리를 읽지 않아 같은 현상이 재현됩니다.
+  원인 구간과 대응안은 [검증 범위와 지원 범위](verification-status.md)의 K1에 정리했습니다.
 
 ## 계획 → 명령
 
@@ -121,11 +122,11 @@ takeoff(탐색 고도) → goto(구역 웨이포인트) × N → 귀환 → land
 
 | event | 주요 필드 |
 |---|---|
-| `server_started` | 드론 구성, 연결 여부와 실패 이유, binding, Dispatcher 설정, 로드된 임무 |
+| `server_started` | 드론 구성, 연결 문자열, 연결 여부와 실패 이유, binding, Dispatcher 설정, 로드된 임무 |
 | `plan_submitted` | 제출 원본 `plan`, `attempt`(해당 임무 누적 제출 횟수), `generated_at_filled_by_server` |
 | `plan_rejected` | `errors` |
 | `plan_accepted` | 작업 목록, 생성된 명령 전체 |
-| `command_transition` | 명령 ID·종류, 이전·현재 상태, 시각, `elapsed_since_sent_s`, 오류 |
+| `command_transition` | 명령 ID·종류, 이전·현재 상태, 시각, `elapsed_since_sent_s`, 오류. `sent`에는 실제로 호출한 클라이언트(`target`: drone_id, protocol, binding) |
 | `task_finished` | 작업 최종 상태 |
 | `emergency_stop` | 비상 정지 대상과 착륙 확인 여부 |
 
@@ -192,6 +193,52 @@ MIDDLEWARE_DRONES_CONFIG=services/middleware/config/drones.real.example.json \
   python3 services/middleware/scripts/check_mvp_pipeline.py
 ```
 
+### 통합 검증 증거 수집
+
+`scripts/collect_integration_evidence.py`는 `check_mvp_pipeline.py`와 같은 흐름(context →
+잘못된 계획 → 정상 계획 → 상태 조회)을 stdio MCP로 실행하고, 결과를 증거 폴더에 남깁니다.
+`--drones`로 고른 드론만 서버에 등록하고 계획에 넣습니다. 서버에는 구성 파일에서 선택한
+드론만 남긴 사본(`drones.selected.json`)을 넘깁니다. `MIDDLEWARE_DRONES_CONFIG`,
+`MIDDLEWARE_SCENARIOS_DIR`, `MIDDLEWARE_EVENT_LOG`는 서버와 같은 의미로 사용합니다.
+
+```bash
+export MIDDLEWARE_DRONES_CONFIG=services/middleware/config/drones.real.example.json
+
+# A. MAVLink 1대
+python3 services/middleware/scripts/collect_integration_evidence.py --drones drone-01
+# B. AP_DDS 1대
+python3 services/middleware/scripts/collect_integration_evidence.py --drones drone-02
+# C. 2대 동시
+python3 services/middleware/scripts/collect_integration_evidence.py --drones drone-01,drone-02
+```
+
+FakeDrone으로 확인할 때는 `MIDDLEWARE_DRONES_CONFIG`를 지정하지 않습니다. 결과는
+`services/middleware/evidence/<시각>_<시나리오>/`에 저장되며 저장소에는 올리지 않습니다
+(`.gitignore`).
+
+| 파일 | 내용 |
+|---|---|
+| `summary.md` | 임무 결과, 실행 환경, binding, 도구 호출, 명령별 결과, `disconnected` 구간, 식별자 혼선 검사 |
+| `tool_calls/NNN_<tool>.json`, `tool_calls.csv` | 도구 호출별 요청, 응답, 소요 시간(ms) |
+| `command_transitions.csv`, `command_summary.csv` | 명령 상태 전이 전체와 명령별 전이 경로, `sent` 후 경과 시간 |
+| `events.jsonl` | 이번 실행에서 EventLog에 추가된 줄만 잘라 낸 사본 |
+| `bindings.json` | `server_started`의 drone_id, protocol, 연결 문자열, SYSID/COMPID 또는 namespace, 연결 결과 |
+| `environment.json` | Python, OS, WSL 여부, `ROS_DISTRO`, 패키지 버전, 커밋, 구성 파일 경로, fake/real 모드 |
+| `connection_gaps.json`, `identifier_check.json` | 아래 두 검사의 원본 |
+| `server.stderr.log` | 서버와 시뮬레이션 어댑터 출력 |
+
+- **disconnected 구간**: 상태 조회(기본 1초 간격) 응답에서 드론이 `disconnected`로 보고된 연속
+  구간과 그때 실행 중이던 명령을 표시합니다. 조회 간격보다 짧은 구간은 빠질 수 있습니다.
+- **식별자 혼선 검사**: EventLog만으로 판정합니다. 등록된 드론끼리 연결 문자열, ROS 2 namespace,
+  같은 링크의 SYSID가 겹치지 않는지, 계획된 명령이 작업의 드론과 그 프로토콜을 가리키는지,
+  `sent` 전이의 `target`이 `server_started`의 drone_id·protocol·binding과 같은지 확인합니다.
+  명령이 하나도 전송되지 않았으면 `N/A`입니다.
+- 종료 코드는 임무 `succeeded`이고 검사가 `PASS`일 때 0입니다. 기본 대기 시간은 900초(`--timeout`)입니다.
+- 실행 중 스크립트를 중단하면 서버가 함께 종료되어 비행 중인 기체는 마지막 목표에서 대기합니다.
+  이때는 MAVProxy나 ROS 2 서비스로 직접 착륙시켜야 합니다.
+- EventLog 사본은 시작 시점의 파일 크기 이후만 복사하므로, 같은 로그 경로를 쓰는 서버를 동시에
+  실행하지 않습니다.
+
 ## 임시 구현과 교체 지점
 
 | 임시 구현 | 위치 | 교체 대상 |
@@ -202,13 +249,8 @@ MIDDLEWARE_DRONES_CONFIG=services/middleware/config/drones.real.example.json \
 
 ## 검증 범위
 
-| 항목 | 상태 |
-|---|---|
-| FakeDrone 2대로 context 조회 → 계획 제출 → 동시 비행 → 완료 | 검증 (pytest, stdio 확인 스크립트) |
-| 계획 교차 검증, 명령 변환, 상태 전이, 통신 두절 판정, 비상 정지 | 검증 (pytest, FakeDrone) |
-| 실제 `MavlinkDrone` / `Ros2Drone` 연결 | **미검증** — WSL, ArduPilot SITL, ROS 2 Humble 환경 필요 |
-| 실제 SITL 비행 중 stdout 격리, 스레드 동시 접근 | **미검증** |
-| Python 3.10 호환 | 정적 검사만 (`test_python310_compat.py`). 실제 3.10 실행은 WSL에서 확인 필요 |
+항목별 실제 SITL 검증, Mock(FakeDrone) 검증, 검증 불가 구분과 지원 범위, 버전 제약, 알려진 실패
+지점은 [검증 범위와 지원 범위](verification-status.md)에 정리합니다.
 
 FakeDrone은 일정 속도로 목표를 향해 직선 이동하는 모델이며 물리, 배터리 소모, 바람이 없습니다.
 FakeDrone 결과는 실제 비행 성공의 근거가 아닙니다.

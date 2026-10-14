@@ -174,6 +174,30 @@ class DroneHandle:
             self.client.close()
         self.connected = False
 
+    def identity(self) -> dict[str, Any]:
+        """Who a command actually reaches: registered ID, protocol, and live binding.
+
+        The binding is read from the client now rather than from the copy taken at
+        connect time, so a client that was re-bound shows up as a mismatch.
+        """
+        return {
+            "drone_id": self.drone_id,
+            "protocol": self.protocol,
+            "binding": _binding_for(self) if self.connected else None,
+        }
+
+    def describe(self) -> dict[str, Any]:
+        """Registration details recorded in the ``server_started`` event."""
+        return {
+            "drone_id": self.drone_id,
+            "protocol": self.protocol,
+            "mode": self.config.mode,
+            "connection_string": self.config.connection_string,
+            "connected": self.connected,
+            "connect_error": self.connect_error,
+            "binding": self.binding,
+        }
+
     def latest_sample(self) -> tuple[dict[str, Any] | None, float | None]:
         """Return the last telemetry sample and its age in seconds."""
         with self._sample_lock:

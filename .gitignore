@@ -45,6 +45,7 @@ coverage.xml
 *.log
 *.pid
 services/middleware/logs/
+services/middleware/evidence/
 
 # Node.js (for optional monitoring UI)
 node_modules/
