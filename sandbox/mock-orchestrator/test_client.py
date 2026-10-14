@@ -130,7 +130,7 @@ async def main():
             else:
                 print("  ❌ area-a는 분할되지 않았습니다.")
 
-            print("--- return_home: 지나온 경로를 역순으로 되짚는지 확인 ---")
+            print("--- return_home: 홈(0, 0)으로 직선 복귀하는지 확인 ---")
             r6 = await session.call_tool("return_home", {"drone_id": "drone-1"})
             print("  return_home:", r6.content[0].text)
             r6_status = await session.call_tool("get_status", {"drone_id": "drone-1"})
