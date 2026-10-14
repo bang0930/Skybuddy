@@ -44,6 +44,7 @@ coverage.xml
 # Logs and runtime files
 *.log
 *.pid
+services/middleware/logs/
 
 # Node.js (for optional monitoring UI)
 node_modules/

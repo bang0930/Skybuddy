@@ -1,0 +1,28 @@
+{
+  "telemetry_timeout_s": 3.0,
+  "drones": [
+    {
+      "drone_id": "drone-01",
+      "protocol": "mavlink",
+      "mode": "fake",
+      "fake": {
+        "home": {"latitude": -35.363261, "longitude": 149.165197},
+        "horizontal_speed_m_s": 10.0,
+        "vertical_speed_m_s": 6.0,
+        "telemetry_interval_s": 0.05,
+        "system_id": 1
+      }
+    },
+    {
+      "drone_id": "drone-02",
+      "protocol": "ap_dds",
+      "mode": "fake",
+      "fake": {
+        "home": {"latitude": -35.363261, "longitude": 149.165263},
+        "horizontal_speed_m_s": 10.0,
+        "vertical_speed_m_s": 6.0,
+        "telemetry_interval_s": 0.05
+      }
+    }
+  ]
+}

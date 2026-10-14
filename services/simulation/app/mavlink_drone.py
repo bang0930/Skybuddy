@@ -67,6 +67,40 @@ class MavlinkDrone(DroneInterface):
 
     # -------------------------------------------------------- 내부 헬퍼
 
+    def _drain(self, max_messages=5000):
+        """수신 버퍼에 쌓인 메시지를 모두 읽어 내고 종류별 최신값만 남긴다.
+
+        [연결을 유지한 채 쓸 때 필요한 이유]
+        pymavlink 는 소켓에 쌓인 메시지를 '도착한 순서대로' 하나씩 꺼낸다.
+        미션마다 새로 연결하던 때는 버퍼가 늘 비어 있어 문제가 드러나지 않았지만,
+        미들웨어 Registry 처럼 연결을 유지한 채 가끔씩만 읽으면 그 사이 쌓인
+        오래된 메시지가 먼저 나온다. 그러면
+          - 상태 조회가 수십 초 전 위치를 돌려주고
+          - 명령 응답(COMMAND_ACK)을 이전 명령의 것과 헷갈릴 수 있다.
+        읽은 메시지는 master.messages 에 종류별 최신값으로 남으므로 버려도 손실이 없다.
+        UDP 소켓이 논블로킹이라 쌓인 것이 없으면 recv_msg() 가 즉시 None 을 돌려준다.
+        """
+        for _ in range(max_messages):
+            if self.master.recv_msg() is None:
+                return
+
+    def _wait_ack(self, command, timeout):
+        """지정한 명령에 대한 COMMAND_ACK 만 기다린다. 다른 명령의 응답은 건너뛴다.
+
+        ArduPilot 은 모드 변경 요청에도 COMMAND_ACK(command=11)를 보낸다 (실측 확인됨).
+        명령 번호를 확인하지 않으면 모드 변경 응답을 시동이나 이륙 응답으로 착각한다.
+        """
+        deadline = time.time() + timeout
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return None
+            ack = self.master.recv_match(type='COMMAND_ACK', blocking=True, timeout=remaining)
+            if ack is None:
+                return None
+            if ack.command == command:
+                return ack
+
     def set_mode(self, mode_name, timeout=10):
         """비행 모드를 바꾸고 하트비트로 실제 반영을 확인한다. 성공하면 True.
 
@@ -75,6 +109,8 @@ class MavlinkDrone(DroneInterface):
         재요청하고, 끝내 안 되면 조용히 넘어가지 않고 False를 리턴한다.
         """
         mode_id = self.master.mode_mapping()[mode_name]
+        # 쌓여 있던 예전 하트비트를 지워야 '지금' 모드를 보고 판단한다.
+        self._drain()
         deadline = time.time() + timeout
         while time.time() < deadline:
             self.master.mav.set_mode_send(
@@ -95,12 +131,13 @@ class MavlinkDrone(DroneInterface):
         "왜 안 되는지 모른 채 재시도만" 하게 된다.
         """
         param2 = 21196 if self.force_arm else 0   # ArduPilot 강제 시동 매직넘버
+        self._drain()
         self.master.mav.command_long_send(
             self.master.target_system, self.master.target_component,
             mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0,
             1, param2, 0, 0, 0, 0, 0
         )
-        ack = self.master.recv_match(type='COMMAND_ACK', blocking=True, timeout=5)
+        ack = self._wait_ack(mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, timeout=5)
         if ack is not None and ack.result == 0:
             return True
 
@@ -160,6 +197,8 @@ class MavlinkDrone(DroneInterface):
 
         time.sleep(1.0)
 
+        # 모드 변경 응답 등 앞서 쌓인 응답을 비운다. 아래에서는 이륙 명령의 응답만 본다.
+        self._drain()
         deadline = time.time() + 20
         last_result = None
         accepted = False
@@ -169,7 +208,7 @@ class MavlinkDrone(DroneInterface):
                 mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0,
                 0, 0, 0, 0, 0, 0, altitude_m
             )
-            ack = self.master.recv_match(type='COMMAND_ACK', blocking=True, timeout=3)
+            ack = self._wait_ack(mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, timeout=3)
             if ack is not None and ack.result == 0:
                 accepted = True
                 break
@@ -219,12 +258,19 @@ class MavlinkDrone(DroneInterface):
             0, 0
         )
 
-    def land(self, timeout=60):
+    def land(self, timeout=None):
         """착륙 명령 후 시동이 실제로 꺼질 때까지 기다린다. 성공하면 True.
 
         명령만 보내고 리턴하면 다음 작업이 "아직 떠 있고 시동이 걸린" 기체 위에서
         시작해서 엉뚱하게 실패한다. 그래서 하트비트의 armed 플래그가 내려가는 것까지 확인한다.
+
+        timeout 이 None 이면 지금 고도로 정한다 (DroneInterface.landing_timeout_s).
         """
+        self._drain()
+        if timeout is None:
+            pos = self.master.messages.get('GLOBAL_POSITION_INT')
+            alt = (pos.relative_alt / 1000.0) if pos is not None else None
+            timeout = self.landing_timeout_s(alt)
         self.master.mav.command_long_send(
             self.master.target_system, self.master.target_component,
             mavutil.mavlink.MAV_CMD_NAV_LAND, 0,
@@ -247,6 +293,7 @@ class MavlinkDrone(DroneInterface):
         운용할 때 다음 기체가 뜨는 동안 이 기체의 스로틀도 살아 있는 상태가 되어
         AirSim/ArduPilot 쪽 크래시를 유발할 수 있다.
         """
+        self._drain()
         self.master.mav.command_long_send(
             self.master.target_system, self.master.target_component,
             mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0,
@@ -278,6 +325,10 @@ class MavlinkDrone(DroneInterface):
         CSV 로 쓸 때만 빈 칸이 되며, 그 변환은 drone_interface.telemetry_to_csv_row()
         가 담당한다.
         """
+        # 쌓인 메시지를 먼저 비워야 '지금' 위치를 받는다. 비우지 않으면 오래 쉬었다가
+        # 불렸을 때 쉬기 시작한 시점의 위치가 나온다 (_drain 참고).
+        # 비운 뒤에는 새로 도착하는 다음 위치 메시지를 기다리므로 약 4Hz 간격은 그대로다.
+        self._drain()
         msg = self.master.recv_match(type='GLOBAL_POSITION_INT', blocking=True, timeout=timeout)
         if msg is None:
             return None

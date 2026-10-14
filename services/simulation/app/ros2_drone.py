@@ -21,6 +21,7 @@ kpi_mission.py 의 미션 로직은 어느 쪽이 붙었는지 알 필요가 없
     반드시 /ap/experimental/takeoff 서비스를 써야 한다.
 """
 import math
+import re
 import threading
 import time
 
@@ -97,6 +98,7 @@ class Ros2Drone(DroneInterface):
         self.node = None
         self._executor = None
         self._spin_thread = None
+        self._rclpy_held = False     # 이 객체가 rclpy 사용 카운트를 하나 잡고 있는지
         self._lock = threading.Lock()
 
         # 최신 수신값 캐시
@@ -115,7 +117,11 @@ class Ros2Drone(DroneInterface):
 
     def connect(self, timeout=30):
         _acquire_rclpy()
-        node_name = f"skybuddy_{self.drone_id}_{int(time.time() * 1000) % 100000}"
+        self._rclpy_held = True
+        # ROS 2 노드 이름에는 영문·숫자·밑줄만 쓸 수 있다. 미들웨어는 드론 ID 를
+        # "drone-02" 처럼 하이픈으로 쓰기로 했으므로(#24) 그대로 넣으면 노드 생성이 실패한다.
+        safe_id = re.sub(r"[^A-Za-z0-9_]", "_", str(self.drone_id))
+        node_name = f"skybuddy_{safe_id}_{int(time.time() * 1000) % 100000}"
         self.node = Node(node_name)
 
         # ArduPilot 은 BEST_EFFORT 로 발행한다. RELIABLE 로 구독하면 매칭이 안 돼
@@ -160,25 +166,33 @@ class Ros2Drone(DroneInterface):
             raise RuntimeError(f"{timeout}초 안에 /{n}/geopose/filtered 수신 실패 "
                                f"(Agent 와 SITL 이 떠 있는지 확인할 것)")
 
-        # 이륙 전 AMSL 을 홈 고도로 잡는다. DDS geopose 는 AMSL 이고 MAVLink
+        # 지금 AMSL 을 일단 홈 고도로 잡는다. DDS geopose 는 AMSL 이고 MAVLink
         # relative_alt 는 홈 기준 상대고도라, 이 기준점이 없으면 두 드론의 고도를
-        # 비교할 수 없다. (산악 지형에서는 이 차이가 수십 m 로 벌어진다)
+        # 비교할 수 없다. 이륙할 때마다 시동 직전 값으로 다시 잡는다 (takeoff 참고).
         self._home_alt_amsl = self._geopose.pose.position.altitude
         print(f"[연결됨] ROS 2 namespace=/{self.ns} "
               f"home_alt_amsl={self._home_alt_amsl:.2f}m")
         return self
 
     def close(self):
+        """여러 번 불려도 안전하다. rclpy 사용 카운트는 한 번만 돌려준다.
+
+        두 번 돌려주면 카운트가 어긋나, 같은 프로세스에서 다른 DDS 드론이 아직 쓰고 있는
+        rclpy 까지 종료된다. 그러면 그 드론의 텔레메트리가 비행 도중 끊긴다.
+        """
         self._target = None
         if self._executor is not None:
             self._executor.shutdown()
+            self._executor = None
         if self.node is not None:
             self.node.destroy_node()
             self.node = None
         if self._spin_thread is not None:
             self._spin_thread.join(timeout=2)
             self._spin_thread = None
-        _release_rclpy()
+        if self._rclpy_held:
+            self._rclpy_held = False
+            _release_rclpy()
 
     # ------------------------------------------------------------ 콜백들
 
@@ -242,6 +256,15 @@ class Ros2Drone(DroneInterface):
         if not self._set_mode(COPTER_MODE_GUIDED):
             raise RuntimeError("GUIDED 전환 실패")
 
+        # 홈 고도를 시동 직전(지상)에 다시 잡는다.
+        # ArduPilot 은 시동을 걸 때 그 자리를 홈으로 새로 정하고, 이동·이륙 명령의 고도도
+        # 그 홈 기준으로 해석한다. 연결할 때 잡은 값만 쓰면, 연결을 유지한 채 다른 곳에
+        # 내렸다가 다시 뜰 때 텔레메트리 고도와 명령 고도의 기준점이 어긋난다.
+        with self._lock:
+            gp = self._geopose
+        if gp is not None:
+            self._home_alt_amsl = gp.pose.position.altitude
+
         req = ArmMotors.Request()
         req.arm = True
         if not self._call(self._cli_arm, req, what="arm_motors").result:
@@ -282,8 +305,15 @@ class Ros2Drone(DroneInterface):
             self._target.header.stamp = self.node.get_clock().now().to_msg()
             self._cmd_pub.publish(self._target)
 
-    def land(self, timeout=60):
+    def land(self, timeout=None):
         self._target = None                 # 목표 재발행을 멈춘다
+        if timeout is None:
+            # 지금 고도로 기다릴 시간을 정한다 (DroneInterface.landing_timeout_s).
+            with self._lock:
+                gp = self._geopose
+            alt = (gp.pose.position.altitude - self._home_alt_amsl
+                   if gp is not None and self._home_alt_amsl is not None else None)
+            timeout = self.landing_timeout_s(alt)
         if not self._set_mode(COPTER_MODE_LAND):
             return False
         deadline = time.time() + timeout
@@ -415,6 +445,6 @@ if __name__ == "__main__":
 
         d.goto(home["lat"], home["lon"], 30)
         time.sleep(20)
-        print("착륙 확인됨" if d.land(timeout=120) else "[경고] 착륙 확인 실패")
+        print("착륙 확인됨" if d.land() else "[경고] 착륙 확인 실패")
     finally:
         d.close()
