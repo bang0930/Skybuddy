@@ -4,7 +4,8 @@
 방법으로 확인했는지 정리합니다. #31(실제 SITL 1차 통합 검증)과 #20(실제·Mock·검증 불가 구분,
 지원 범위·버전 제약·알려진 실패 지점)의 기준 문서입니다.
 
-기준일: 2026-10-14. 실제 SITL 칸은 시뮬레이션 담당이 실행한 뒤 채웁니다.
+기준일: 2026-10-14. 실제 SITL 칸은 같은 날 시뮬레이션 담당이 실행한 1차 결과(실행 A, B, C)로
+채웠습니다. 실행별 결과와 증거 폴더는 [5절](#5-실제-sitl-1차-검증-결과-2026-10-14)에 있습니다.
 
 ## 구분
 
@@ -18,50 +19,50 @@
 
 ## 1. 항목별 검증 상태
 
-실제 SITL 칸에는 결과와 증거 폴더 이름(`<시각>_<시나리오>`)을 적습니다.
+실제 SITL 칸의 A, B, C는 5절의 실행을 가리킵니다.
 
 ### 1-1. 통합 흐름
 
 | # | 항목 | Mock (FakeDrone) | 실제 SITL | Mock 근거 |
 |---|---|---|---|---|
-| F1 | stdio MCP로 context → 잘못된 계획 거부 → 정상 계획 수락 → 상태 조회 | 검증 | | `test_mcp_server.py`, 증거 스크립트 |
-| F2 | MAVLink 1대 단일 흐름 (`--drones drone-01`) | 검증 | | 증거 스크립트 시나리오 A |
-| F3 | AP_DDS 1대 단일 흐름 (`--drones drone-02`) | 검증 | | 증거 스크립트 시나리오 B |
-| F4 | 2대 동시 실행 (`--drones drone-01,drone-02`) | 검증 | | 증거 스크립트 시나리오 C, `test_mission_service.py` |
-| F5 | 명령이 등록된 drone_id·protocol·binding으로만 실행됨 (식별자 혼선 없음) | 검증 | | `test_integration_evidence.py`, summary의 검사 |
-| F6 | 프로토콜별 상위 제어 경로 사용 (MAVLink `SET_POSITION_TARGET_GLOBAL_INT`, AP_DDS `/ap/cmd_gps_pose`) | 검증 불가 | | FakeDrone에는 프로토콜이 없음. 실제 SITL의 `server.stderr.log`와 binding으로 확인 |
+| F1 | stdio MCP로 context → 잘못된 계획 거부 → 정상 계획 수락 → 상태 조회 | 검증 | 검증 (A, B, C) | `test_mcp_server.py`, 증거 스크립트 |
+| F2 | MAVLink 1대 단일 흐름 (`--drones drone-01`) | 검증 | 검증 (A, 8/8 성공) | 증거 스크립트 시나리오 A |
+| F3 | AP_DDS 1대 단일 흐름 (`--drones drone-02`) | 검증 | 검증 (B, 8/8 성공) | 증거 스크립트 시나리오 B |
+| F4 | 2대 동시 실행 (`--drones drone-01,drone-02`) | 검증 | 검증 (C, 16/16 성공) | 증거 스크립트 시나리오 C, `test_mission_service.py` |
+| F5 | 명령이 등록된 drone_id·protocol·binding으로만 실행됨 (식별자 혼선 없음) | 검증 | 검증 (A, B, C 모두 PASS, 불일치 0) | `test_integration_evidence.py`, summary의 검사 |
+| F6 | 프로토콜별 상위 제어 경로 사용 (MAVLink `SET_POSITION_TARGET_GLOBAL_INT`, AP_DDS `/ap/cmd_gps_pose`) | 검증 불가 | 부분 (C) | FakeDrone에는 프로토콜이 없음. 실제: AP_DDS는 토픽 캡처로 확인, MAVLink는 binding과 어댑터 출력만 있고 메시지 캡처 없음 (5절) |
 
 ### 1-2. 연결과 상태 수집
 
 | # | 항목 | Mock (FakeDrone) | 실제 SITL | Mock 근거 |
 |---|---|---|---|---|
-| S1 | MAVLink 연결과 SYSID/COMPID binding 획득 | 부분 | | FakeDrone은 설정값의 SYSID를 돌려줌. 실제는 HEARTBEAT에서 얻음 |
-| S2 | AP_DDS 연결과 namespace binding | 부분 | | FakeDrone 기본 namespace `ap` |
-| S3 | `Telemetry` → `DroneState` 변환, 프로토콜별 capabilities | 검증 | | `test_telemetry_mapper.py`, `test_runtime_registry.py` |
-| S4 | 통신 두절 판정 (`telemetry_timeout_s` 3초) | 검증 | | FakeDrone `link_up=False`. 실제는 MAVProxy·Agent를 내려 링크만 끊어야 함 |
-| S5 | 연결 실패 드론이 있어도 서버 계속 실행, 계획은 `DRONE_DISCONNECTED`로 거부 | 검증 | | `test_runtime_registry.py` |
-| S6 | 블로킹 명령(takeoff, land) 중 `disconnected` 표시 (K1) | 부분 | | FakeDrone `land()` 구간에서 재현. takeoff 구간은 FakeDrone이 텔레메트리를 읽어 재현 안 됨 |
-| S7 | 연결 유지 상태로 상태 조회를 반복해도 최신 위치 | 미검증 | | FakeDrone은 버퍼가 없음. MAVLink `_drain()` 동작은 실제 SITL에서만 의미가 있음 |
+| S1 | MAVLink 연결과 SYSID/COMPID binding 획득 | 부분 | 검증 (A, C: SYSID 1, COMPID 1) | FakeDrone은 설정값의 SYSID를 돌려줌. 실제는 HEARTBEAT에서 얻음 |
+| S2 | AP_DDS 연결과 namespace binding | 부분 | 검증 (B, C: `/ap`) | FakeDrone 기본 namespace `ap` |
+| S3 | `Telemetry` → `DroneState` 변환, 프로토콜별 capabilities | 검증 | 부분 (A, B, C: 샘플 거부 없음. AP_DDS `gps_fix_type`·`gps_eph`가 항상 `null`, K9) | `test_telemetry_mapper.py`, `test_runtime_registry.py` |
+| S4 | 통신 두절 판정 (`telemetry_timeout_s` 3초) | 검증 | 미검증 (링크 끊기 시험 안 함) | FakeDrone `link_up=False`. 실제는 MAVProxy·Agent를 내려 링크만 끊어야 함 |
+| S5 | 연결 실패 드론이 있어도 서버 계속 실행, 계획은 `DRONE_DISCONNECTED`로 거부 | 검증 | 미검증 (모든 연결 성공) | `test_runtime_registry.py` |
+| S6 | 블로킹 명령(takeoff, land) 중 `disconnected` 표시 (K1) | 부분 | 검증 (A, B, C: land 구간에서 발생, takeoff 구간은 미발생) | FakeDrone `land()` 구간에서 재현. takeoff 구간은 FakeDrone이 텔레메트리를 읽어 재현 안 됨 |
+| S7 | 연결 유지 상태로 상태 조회를 반복해도 최신 위치 | 미검증 | 검증 (C: 119회 조회 동안 위치가 비행 경로를 따라 갱신) | FakeDrone은 버퍼가 없음. MAVLink `_drain()` 동작은 실제 SITL에서만 의미가 있음 |
 
 ### 1-3. 명령 실행
 
 | # | 항목 | Mock (FakeDrone) | 실제 SITL | Mock 근거 |
 |---|---|---|---|---|
-| C1 | 계획 → MissionTask → `DroneInterface` 호출 변환, 30m 미만·`msl` 거부 | 검증 | | `test_drone_interface_commands.py`, `test_plan_validation.py` |
-| C2 | takeoff 95% 고도 도달 후 반환 → `sent → succeeded` | 검증 | | `test_mission_service.py` (상태 전이), FakeDrone이 같은 완료 기준 |
-| C3 | goto 도달 판정(반경 3m), 구간 거리 비례 제한 시간 | 검증 | | `test_mission_service.py` (`test_long_transit_legs_...`, `test_lost_link_...`) |
-| C4 | land 고도 비례 대기(1m당 4초, 최소 60초), 시동 해제 확인 | 검증 | | `test_fake_drone_contract.py` (`test_landing_timeout_matches_simulation_rule`) |
-| C5 | 실패 시 남은 명령 `TASK_ABORTED`, 착륙 후 미확인 시 disarm, 드론 `unavailable` | 검증 | | `test_mission_service.py` |
-| C6 | 두 드론 스레드의 동시 어댑터 접근 직렬화 (pymavlink, rclpy) | 검증 불가 | | FakeDrone은 스레드 문제가 없음 |
-| C7 | 어댑터 `print()`가 MCP stdio를 오염시키지 않음 | 미검증 | | FakeDrone은 출력하지 않음. 실제 실행이 끝까지 되고 `server.stderr.log`에 어댑터 출력이 남으면 확인 |
-| C8 | `return_home()` 사용 | 범위 밖 | | 시뮬레이션 어댑터에 메서드가 아직 없음. `goto(home)`으로 대체 |
+| C1 | 계획 → MissionTask → `DroneInterface` 호출 변환, 30m 미만·`msl` 거부 | 검증 | 부분 (정상 변환만 실행. 거부 경로는 실제 비행과 무관) | `test_drone_interface_commands.py`, `test_plan_validation.py` |
+| C2 | takeoff 95% 고도 도달 후 반환 → `sent → succeeded` | 검증 | 검증 (4회, 12.8~20.6초) | `test_mission_service.py` (상태 전이), FakeDrone이 같은 완료 기준 |
+| C3 | goto 도달 판정(반경 3m), 구간 거리 비례 제한 시간 | 검증 | 부분 (24회 모두 도달, 3.9~7.5초. 시간 초과 경로는 발생 안 함) | `test_mission_service.py` (`test_long_transit_legs_...`, `test_lost_link_...`) |
+| C4 | land 고도 비례 대기(1m당 4초, 최소 60초), 시동 해제 확인 | 검증 | 검증 (4회, 32.6~60.1초. 대기 한도 120초, 200초 이내) | `test_fake_drone_contract.py` (`test_landing_timeout_matches_simulation_rule`) |
+| C5 | 실패 시 남은 명령 `TASK_ABORTED`, 착륙 후 미확인 시 disarm, 드론 `unavailable` | 검증 | 미검증 (실패 없음) | `test_mission_service.py` |
+| C6 | 두 드론 스레드의 동시 어댑터 접근 직렬화 (pymavlink, rclpy) | 검증 불가 | 부분 (C 1회, 약 2분 동시 비행 중 오류 없음) | FakeDrone은 스레드 문제가 없음 |
+| C7 | 어댑터 `print()`가 MCP stdio를 오염시키지 않음 | 미검증 | 검증 (A, B, C: 어댑터 출력이 `server.stderr.log`에만 있고 도구 응답 정상) | FakeDrone은 출력하지 않음. 실제 실행이 끝까지 되고 `server.stderr.log`에 어댑터 출력이 남으면 확인 |
+| C8 | `return_home()` 사용 | 범위 밖 | 범위 밖 | 시뮬레이션 어댑터에 메서드가 아직 없음. `goto(home)`으로 대체 |
 
 ### 1-4. 실행 환경
 
 | # | 항목 | Mock (FakeDrone) | 실제 SITL | Mock 근거 |
 |---|---|---|---|---|
-| E1 | Python 3.10에서 미들웨어 실행 | 부분 | | 정적 검사만 (`test_python310_compat.py`). 개발 PC는 3.13 |
-| E2 | 미들웨어와 어댑터를 같은 프로세스에서 import (`simulation_app_path`) | 미검증 | | |
+| E1 | Python 3.10에서 미들웨어 실행 | 부분 | 검증 (시스템 Python 3.10.12) | 정적 검사만 (`test_python310_compat.py`). 개발 PC는 3.13 |
+| E2 | 미들웨어와 어댑터를 같은 프로세스에서 import (`simulation_app_path`) | 미검증 | 검증 (A, B, C) | |
 
 ### 1-5. 검증 불가와 범위 밖
 
@@ -106,7 +107,7 @@
 
 | # | 지점 | 증상 | 대응 |
 |---|---|---|---|
-| K1 | 블로킹 명령 중 텔레메트리 미수집 | takeoff 앞부분, land 전체 동안 상태 조회가 `disconnected`로 보고됨 | 4-1 참고. 현재는 증거 summary의 `disconnected` 구간과 명령 단계로 구분 |
+| K1 | 블로킹 명령 중 텔레메트리 미수집 | land 전체 동안 상태 조회가 `disconnected`로 보고됨(실측 MAVLink 약 55초, AP_DDS 약 29~36초). takeoff 앞부분도 같은 구조지만 1차 실행에서는 GUIDED 전환이 즉시 끝나 발생하지 않음 | 4-1 참고. 현재는 증거 summary의 `disconnected` 구간과 명령 단계로 구분 |
 | K2 | 부팅 직후 GUIDED 전환 거부, NAV_TAKEOFF 거부 | takeoff 예외 → 작업 `failed`, 드론 `unavailable` | SITL 준비 완료(`start_hetero_sim.sh`) 후 실행. 실패한 드론은 서버를 다시 시작해야 재배정 가능 |
 | K3 | DDS Agent 미기동, ROS 환경 미소싱 | `Ros2Drone` 연결이 30초 뒤 실패하거나 import 실패 → `connect_error` | 기동 순서 AirSim → Agent → SITL, `source` 2개 확인 |
 | K4 | AirSim lock-step | SITL 하나라도 꺼지면 시뮬레이션 정지 | 1대 시나리오에서도 SITL 2대를 모두 띄움. 선택하지 않은 드론은 미들웨어에 등록하지 않을 뿐임 |
@@ -114,6 +115,8 @@
 | K6 | goto 제한 시간 | 실측 속도(2.7~4.8m/s)보다 느리면 `WAYPOINT_TIMEOUT` | 구간 제한 시간 = max(60초, 거리 ÷ 2.0m/s). 설정 파일 `dispatcher`로 조정 |
 | K7 | Python 버전 불일치 | 3.11+ venv에서 `rclpy` import 실패 | 시스템 `python3`(3.10) 사용 |
 | K8 | 증거 수집 동시 실행 | 같은 EventLog 경로를 쓰는 서버가 둘이면 사본에 다른 실행의 이벤트가 섞임 | 한 번에 하나씩 실행하거나 `MIDDLEWARE_EVENT_LOG`를 분리 |
+| K9 | AP_DDS `gps_fix_type`, `gps_eph`가 항상 `null` (1차 실행에서 발견) | `Ros2Drone`이 `/ap/navsat/navsat0`를 받지 못한 것으로 보임. capabilities에는 지원 필드로 올라가 있어 계속 `temporarily_unavailable`로 보고됨 | 시뮬레이션 담당이 `ros2 topic list`로 토픽 이름과 발행 여부를 확인. 발행되지 않는 것이 맞다면 `AP_DDS_CAPABILITIES`에서 두 필드를 빼서 `unsupported`로 보고 |
+| K10 | AP_DDS 좌표 정밀도 (1차 실행에서 발견) | AP_DDS 위경도가 모두 float32로 표현되는 값. 이 위치에서 해상도는 위도 약 0.42m, 경도 약 1.4m (MAVLink는 약 1cm) | 도달 반경 3m 판정에는 영향 없음. 커버리지·경로 효율 KPI와 #20 정합성 허용 오차를 정할 때 반영. 원인(ArduPilot AP_DDS 발행 형식) 확인 필요 |
 
 ### 4-1. K1 블로킹 명령 중 연결 판정
 
@@ -147,3 +150,44 @@ Dispatcher가 클라이언트 잠금을 쥐고 있어 상태 조회가 새 샘�
 늘린 사실을 EventLog에 남깁니다. B는 Fallback 설계(9~10주차)에서 필요하면 함께 검토합니다.
 `master.messages`나 `_geopose` 같은 어댑터 내부 속성을 미들웨어가 직접 읽는 방식은 시뮬레이션
 코드 변경에 쉽게 깨지므로 쓰지 않습니다.
+
+## 5. 실제 SITL 1차 검증 결과 (2026-10-14)
+
+시뮬레이션 담당이 `collect_integration_evidence.py`(커밋 `3470fe1`)를 실제 모드
+(`drones.real.example.json`)로 실행한 결과입니다. 증거 폴더는 저장소에 올리지 않고
+`sitl_evidence_31.zip`으로 보관합니다.
+
+| 실행 | 증거 폴더 | 드론 | 결과 | 소요 | 식별자 검사 | `disconnected` 구간 |
+|---|---|---|---|---|---|---|
+| A | `20261014-115011_single-drone-01-mavlink` | drone-01 (MAVLink, `udpin:127.0.0.1:14561`, SYSID 1) | succeeded, 8/8 | 123.7초 | PASS | land 중 약 55초 (조회 56회) |
+| B | `20261014-115223_single-drone-02-ap_dds` | drone-02 (AP_DDS, `ros2:ap`) | succeeded, 8/8 | 74.5초 | PASS | land 중 약 29초 (조회 30회) |
+| C | `20261014-115610_multi-drone-01-drone-02` | 두 대 동시 | succeeded, 16/16 | 123.6초 | PASS | drone-01 land 중 약 56초, drone-02 land 중 약 36초 |
+
+실행 환경: WSL2 (Linux 6.18 microsoft-standard), 시스템 Python 3.10.12, `ROS_DISTRO=humble`.
+AirSim 실행 여부는 증거 폴더에 기록되지 않으므로 시뮬레이션 담당의 실행 기록으로 확인합니다.
+
+명령별 실측 (A, B, C 합계):
+
+| 명령 | MAVLink | AP_DDS |
+|---|---|---|
+| takeoff (`sent` → `succeeded`) | 19.4~20.6초 | 12.8~17.6초 |
+| goto 한 구간 | 5.5~7.5초 | 3.9~5.8초 |
+| land (시동 해제 확인까지) | 59.4~60.1초 | 32.6~40.6초 |
+| `get_mission_context` 응답 | 231~253ms | 241~253ms |
+
+확인 방법:
+
+- **흐름**: 세 실행 모두 잘못된 계획이 `UNKNOWN_AREA`로 거부된 뒤 정상 계획이 수락되고, 모든
+  명령이 `pending → sent → (executing) → succeeded`로 끝났습니다. 오류 전이와 비상 정지는 없습니다.
+- **식별자**: summary의 검사 결과를 받은 `events.jsonl`과 도구 응답 원본으로 다시 계산해 같은
+  결과(PASS, 불일치 0)를 확인했습니다. 모든 `sent` 전이의 `target`이 등록된 binding과 같습니다.
+- **AP_DDS 제어 경로**: 실행 C 동안 `ros2 topic echo /ap/cmd_gps_pose`로 받은 메시지 62개의 목표
+  변화 6번(꼭짓점 4개 → 첫 꼭짓점 복귀 → 귀환점)이 drone-02에 계획된 goto 6개와 값과 순서까지
+  일치하고, drone-01의 목표는 이 토픽에 나타나지 않았습니다. 메시지는 `frame_id: map`, `coordinate_frame: 6`,
+  `type_mask: 3576`으로 어댑터 계약과 같습니다.
+- **MAVLink 제어 경로**: HEARTBEAT로 얻은 SYSID 1 binding과 어댑터 출력(`[연결됨] system=1
+  component=1`, `[GUIDED 전환]`)으로 간접 확인했습니다. `SET_POSITION_TARGET_GLOBAL_INT`
+  메시지 캡처(MAVProxy 로그 등)는 없습니다.
+
+이번 실행에서 발생하지 않은 것: K2~K8의 실패, goto 시간 초과, 연결 실패, 샘플 계약 위반 경고.
+새로 발견한 것: K9, K10.

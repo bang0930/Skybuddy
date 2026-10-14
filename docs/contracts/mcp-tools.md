@@ -86,7 +86,8 @@ MCP 서버 ── MissionService
 - 어댑터의 `takeoff()`가 고도 도달을 기다리며 내부에서 읽는 텔레메트리도 캐시에 반영됩니다.
   다만 실제 `MavlinkDrone.takeoff()`의 시동·GUIDED 전환 대기(최대 30초)나 `land()`의 시동
   해제 대기(고도 1m당 4초, 최소 60초)처럼 텔레메트리를 읽지 않는 구간에는 `disconnected`로
-  보일 수 있습니다. FakeDrone의 `land()`도 텔레메트리를 읽지 않아 같은 현상이 재현됩니다.
+  보일 수 있습니다. 실제 SITL 1차 실행에서는 land 구간 전체(MAVLink 약 55초, AP_DDS 약 29~36초)가
+  `disconnected`로 보고되었습니다. FakeDrone의 `land()`도 텔레메트리를 읽지 않아 같은 현상이 재현됩니다.
   원인 구간과 대응안은 [검증 범위와 지원 범위](verification-status.md)의 K1에 정리했습니다.
 
 ## 계획 → 명령
