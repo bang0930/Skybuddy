@@ -6,18 +6,31 @@ Exposes three tools to the LLM orchestrator:
 - ``submit_mission_plan``: validate a drone-to-area plan and start execution
 - ``get_mission_status``: per-drone state and per-command results
 
-Run over stdio from the repository root::
+Run from the repository root::
 
-    PYTHONPATH=services/middleware python -m app.mcp_server
+    PYTHONPATH=services/middleware python -m app.mcp_server                    # stdio
+    MCP_TRANSPORT=http PYTHONPATH=services/middleware python -m app.mcp_server  # HTTP
+
+Over stdio the client starts the server and the server stops when the client leaves, so
+a flight in progress loses its Dispatcher thread (K5). Over HTTP the server stays up
+between client sessions: flights continue after a client disconnects and later sessions
+see the same mission state. Clients connect to ``http://<MCP_HOST>:<MCP_PORT>/mcp``.
 
 Environment variables:
 
+- ``MCP_TRANSPORT``: ``stdio`` (default) or ``http``; anything else is rejected at start
+- ``MCP_HOST``: HTTP bind address (default ``127.0.0.1``). There is no authentication,
+  so bind other addresses only on a trusted network.
+- ``MCP_PORT``: HTTP port (default ``9000``)
 - ``MIDDLEWARE_DRONES_CONFIG``: registry config (default ``config/drones.fake.json``)
 - ``MIDDLEWARE_SCENARIOS_DIR``: directory of mission scenario JSON files
 - ``MIDDLEWARE_EVENT_LOG``: JSONL event log path
 """
 
 import os
+import sys
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from fastmcp import FastMCP
@@ -38,6 +51,54 @@ MIDDLEWARE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DRONES_CONFIG = MIDDLEWARE_ROOT / "config" / "drones.fake.json"
 DEFAULT_SCENARIOS_DIR = MIDDLEWARE_ROOT / "config" / "scenarios"
 DEFAULT_EVENT_LOG = MIDDLEWARE_ROOT / "logs" / "mission-events.jsonl"
+
+# Same variable names and defaults as sandbox/mock-orchestrator/mock_drone_server.py, so
+# the orchestrator swaps the mock for the middleware by MCP_SERVER_URL alone.
+TRANSPORTS = ("stdio", "http")
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 9000
+HTTP_PATH = "/mcp"
+
+
+@dataclass(frozen=True)
+class TransportSettings:
+    """How the server talks to MCP clients. ``host``/``port`` are set for HTTP only."""
+
+    transport: str
+    host: str | None = None
+    port: int | None = None
+
+    @property
+    def url(self) -> str | None:
+        if self.transport != "http":
+            return None
+        return f"http://{self.host}:{self.port}{HTTP_PATH}"
+
+
+def transport_from_env(environ: Mapping[str, str] = os.environ) -> TransportSettings:
+    """Read ``MCP_TRANSPORT``/``MCP_HOST``/``MCP_PORT``; raise ValueError on bad values.
+
+    Unlike the mock server, an unknown transport is an error rather than a silent
+    fallback to stdio: an HTTP server that quietly ran over stdio would leave the
+    orchestrator unable to connect without saying why.
+    """
+    transport = environ.get("MCP_TRANSPORT", "").strip() or "stdio"
+    if transport not in TRANSPORTS:
+        raise ValueError(
+            f"MCP_TRANSPORT must be one of {', '.join(TRANSPORTS)}; got {transport!r}"
+        )
+    if transport == "stdio":
+        return TransportSettings("stdio")
+
+    host = environ.get("MCP_HOST", "").strip() or DEFAULT_HOST
+    port_text = environ.get("MCP_PORT", "").strip() or str(DEFAULT_PORT)
+    try:
+        port = int(port_text)
+    except ValueError:
+        raise ValueError(f"MCP_PORT must be an integer; got {port_text!r}") from None
+    if not 1 <= port <= 65_535:
+        raise ValueError(f"MCP_PORT must be between 1 and 65535; got {port}")
+    return TransportSettings("http", host, port)
 
 
 class AssignmentInput(TypedDict):
@@ -117,7 +178,8 @@ def create_mcp_server(service: MissionService) -> FastMCP:
     return mcp
 
 
-def build_service_from_env() -> MissionService:
+def build_service_from_env(transport: TransportSettings | None = None) -> MissionService:
+    transport = transport or TransportSettings("stdio")
     config_path = Path(os.environ.get("MIDDLEWARE_DRONES_CONFIG", DEFAULT_DRONES_CONFIG))
     scenarios_dir = Path(os.environ.get("MIDDLEWARE_SCENARIOS_DIR", DEFAULT_SCENARIOS_DIR))
     event_log_path = Path(os.environ.get("MIDDLEWARE_EVENT_LOG", DEFAULT_EVENT_LOG))
@@ -134,6 +196,9 @@ def build_service_from_env() -> MissionService:
     registry.connect_all()
     event_log.write(
         "server_started",
+        transport=transport.transport,
+        host=transport.host,
+        port=transport.port,
         drones_config=str(config_path),
         missions=[scenario.mission_id for scenario in scenarios],
         dispatcher=config.dispatcher,
@@ -153,13 +218,67 @@ def build_service_from_env() -> MissionService:
     )
 
 
-def main() -> None:
-    service = build_service_from_env()
+def stop_service(service: MissionService, transport: TransportSettings) -> list[dict]:
+    """Record what is still flying, warn about it, then close every drone connection.
+
+    Nothing is landed automatically: the Dispatcher threads end with the process, so a
+    drone listed here keeps holding its last target until someone lands it (K5).
+    ``close_all()`` waits for a blocking command (takeoff, land) that holds a client.
+    """
+    running = service.running_tasks()
+    service.event_log.write(
+        "server_stopping", transport=transport.transport, running_tasks=running
+    )
+    if running:
+        lines = [
+            (
+                f"[mcp_server] 경고: 실행 중인 작업 {len(running)}개를 남기고 서버를 "
+                "종료합니다. 자동 착륙은 하지 않으므로 아래 드론이 공중에 남아 있을 수 있습니다."
+            )
+        ]
+        for task in running:
+            command = task["current_command"] or {}
+            lines.append(
+                f"  - {task['drone_id']}: {task['task_id']} "
+                f"(현재 명령 {command.get('command_type')} {command.get('status')})"
+            )
+        lines.append(
+            "  수동 착륙 방법: docs/development/local-full-pipeline.md 의 '서버 중단 시 수동 착륙'"
+        )
+        print("\n".join(lines), file=sys.stderr, flush=True)
+    service.registry.close_all()
+    return running
+
+
+def main() -> int:
     try:
-        create_mcp_server(service).run(show_banner=False)
+        transport = transport_from_env()
+    except ValueError as exc:
+        # Reject before connecting to any drone.
+        print(f"[mcp_server] {exc}", file=sys.stderr)
+        return 2
+
+    service = build_service_from_env(transport)
+    server = create_mcp_server(service)
+    try:
+        if transport.transport == "http":
+            print(f"[mcp_server] listening on {transport.url}", file=sys.stderr, flush=True)
+            # Banner off: its box characters fail on non-UTF-8 consoles.
+            server.run(
+                transport="http",
+                host=transport.host,
+                port=transport.port,
+                path=HTTP_PATH,
+                show_banner=False,
+            )
+        else:
+            server.run(transport="stdio", show_banner=False)
+    except KeyboardInterrupt:
+        pass  # Ctrl+C is the normal way to stop the HTTP server.
     finally:
-        service.registry.close_all()
+        stop_service(service, transport)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

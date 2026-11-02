@@ -22,6 +22,56 @@ MCP 서버 ── MissionService
                                                         └ Telemetry → DroneState
 ```
 
+## 전송 방식
+
+MCP 전송은 `MCP_TRANSPORT`로 고릅니다. 변수 이름과 기본값은 mock 서버
+(`sandbox/mock-orchestrator/mock_drone_server.py`)와 같아서, 오케스트레이터는
+`MCP_SERVER_URL=http://127.0.0.1:9000/mcp` 하나로 mock과 미들웨어를 바꿔 끼울 수 있습니다.
+
+| 변수 | 값 | 기본 |
+|---|---|---|
+| `MCP_TRANSPORT` | `stdio` 또는 `http`. 다른 값이면 드론에 연결하기 전에 종료 코드 2로 시작을 거부 (mock은 `stdio`로 넘어감) | `stdio` |
+| `MCP_HOST` | HTTP 바인딩 주소 | `127.0.0.1` |
+| `MCP_PORT` | HTTP 포트 (1~65535) | `9000` |
+
+접속 경로는 `/mcp`(streamable HTTP)입니다.
+
+| | stdio | http |
+|---|---|---|
+| 서버 수명 | 클라이언트가 서버를 실행하고, 클라이언트가 끝나면 서버도 끝남 | 직접 실행해 두고 Ctrl+C로 종료 |
+| 클라이언트 연결이 끝난 뒤의 비행 | Dispatcher 스레드가 서버와 함께 끝나 기체가 마지막 목표에서 대기 (K5) | 계속 진행. 다음 세션에서 같은 임무 상태를 조회 |
+| 임무 상태 | 연결마다 새로 시작 | 서버가 떠 있는 동안 유지. `attempt`, `task_id` 번호, 실패로 `unavailable`이 된 드론도 유지 |
+| 동시 접속 | 접속마다 서버가 새로 떠서 실제 모드에서는 같은 UDP 포트(`udpin:14561`)를 두고 충돌 | 서버 하나를 여러 세션이 공유 |
+| 환경 변수 | MCP stdio 클라이언트는 `HOME`, `PATH` 등 일부만 자식 프로세스에 넘기므로 ROS 2 환경과 `MIDDLEWARE_*`가 빠질 수 있음 | 서버를 실행한 터미널의 환경을 그대로 씀 |
+| 사용처 | `check_mvp_pipeline.py`(기본), `collect_integration_evidence.py`, 테스트 | 오케스트레이터 연동, 로컬 전체 파이프라인 |
+
+- 인증이 없으므로 기본 바인딩은 `127.0.0.1`입니다. `MCP_HOST=0.0.0.0`으로 열면 네트워크 구성에
+  따라(예: WSL mirrored 모드) 다른 컴퓨터도 접속해 드론에 명령을 보낼 수 있으므로, Windows에서 WSL
+  서버로 접속이 안 될 때만 믿을 수 있는 네트워크에서 사용합니다([로컬 전체 파이프라인 실행](../development/local-full-pipeline.md)).
+- HTTP 서버에서는 상태가 이어지므로 `get_mission_status`의 `state`는 서버가 시작된 뒤
+  그 임무에 수락된 **모든** 작업으로 계산합니다. 앞선 계획의 작업이 하나라도 실패했으면 이후 계획이
+  성공해도 `failed`로 남습니다. 이번 계획의 결과는 `submit_mission_plan`이 돌려준 `task_id`로
+  `tasks`를 골라 판단합니다(`check_mvp_pipeline.py`가 이렇게 판정).
+- stdio 스크립트(`check_mvp_pipeline.py` 기본 모드, `collect_integration_evidence.py`)는 서버를
+  띄울 때 `MCP_TRANSPORT=stdio`를 강제하므로, HTTP 서버용으로 `MCP_TRANSPORT=http`를 export한
+  터미널에서도 그대로 동작합니다. 실제 모드에서는 HTTP 서버가 이미 드론에 연결되어 있으면 stdio
+  스크립트가 같은 포트로 연결하지 못하므로 둘을 동시에 실행하지 않습니다.
+
+### 종료
+
+서버가 끝날 때(HTTP의 Ctrl+C, stdio의 클라이언트 종료) 다음 순서로 처리합니다. 자동 착륙은 하지
+않습니다.
+
+1. 실행 중인 작업 목록(임무, `task_id`, 드론, 구역, 진행 중인 명령과 상태)을 `server_stopping`
+   이벤트로 기록합니다.
+2. 실행 중인 작업이 있으면 해당 드론이 공중에 남을 수 있다는 경고를 stderr에 출력합니다.
+3. 모든 드론 연결을 닫습니다(`close_all()`). takeoff·land처럼 클라이언트를 잡고 있는 블로킹 명령이
+   진행 중이면 그 명령이 끝날 때까지 기다립니다(land는 최대 `landing_timeout_s`). 기다리지 않으려면
+   Ctrl+C를 한 번 더 누릅니다.
+
+Dispatcher 스레드는 프로세스와 함께 끝나므로 남은 드론은 마지막 목표에서 대기합니다(K5).
+수동 착륙 방법은 [로컬 전체 파이프라인 실행](../development/local-full-pipeline.md)에 있습니다.
+
 ## MCP 도구
 
 | 도구 | 입력 | 결과 |
@@ -149,13 +199,14 @@ takeoff(탐색 고도) → goto(구역 웨이포인트) × N → 귀환 → land
 
 | event | 주요 필드 |
 |---|---|
-| `server_started` | 드론 구성, 연결 문자열, 연결 여부와 실패 이유, binding, Dispatcher 설정, 웨이포인트 설정(`waypoints`: 생성기, `side_overlap`, `max_leg_m`, 드론별 `swath_width_m`), 로드된 임무 |
+| `server_started` | 전송 방식(`transport`, HTTP면 `host`·`port`), 드론 구성, 연결 문자열, 연결 여부와 실패 이유, binding, Dispatcher 설정, 웨이포인트 설정(`waypoints`: 생성기, `side_overlap`, `max_leg_m`, 드론별 `swath_width_m`), 로드된 임무 |
 | `plan_submitted` | 제출 원본 `plan`, `attempt`(해당 임무 누적 제출 횟수), `generated_at_filled_by_server` |
 | `plan_rejected` | `errors` |
 | `plan_accepted` | 작업 목록, 생성된 명령 전체 |
 | `command_transition` | 명령 ID·종류, 이전·현재 상태, 시각, `elapsed_since_sent_s`, 오류. `sent`에는 실제로 호출한 클라이언트(`target`: drone_id, protocol, binding) |
 | `task_finished` | 작업 최종 상태 |
 | `emergency_stop` | 비상 정지 대상과 착륙 확인 여부 |
+| `server_stopping` | `transport`, 종료 시점에 실행 중이던 작업(`running_tasks`: `mission_id`, `task_id`, `drone_id`, `area_id`, `current_command`) |
 
 LLM 원본 출력과 모델 설정은 오케스트레이터에서 기록해야 합니다. 미들웨어는 도구 호출로
 전달받은 계획만 볼 수 있습니다.
@@ -229,9 +280,22 @@ PYTHONPATH=services/middleware pytest -q services/middleware/tests
 # MCP 서버 (stdio)
 PYTHONPATH=services/middleware python -m app.mcp_server
 
-# LLM 없이 서버를 띄워 전 구간 확인
+# MCP 서버 (HTTP, http://127.0.0.1:9000/mcp)
+MCP_TRANSPORT=http PYTHONPATH=services/middleware python -m app.mcp_server
+
+# LLM 없이 서버를 띄워 전 구간 확인 (stdio 서브프로세스)
 python services/middleware/scripts/check_mvp_pipeline.py
+
+# 이미 떠 있는 HTTP 서버에 접속해 같은 흐름 확인 (MCP_SERVER_URL로도 지정 가능)
+python services/middleware/scripts/check_mvp_pipeline.py --url http://127.0.0.1:9000/mcp
 ```
+
+`check_mvp_pipeline.py`는 이번 실행에서 수락된 작업만 보고 성공 여부를 판정합니다. 미들웨어
+가상환경의 `mcp`는 1.x이고 오케스트레이터는 2.x를 쓰므로, 스크립트는 두 버전의 streamable HTTP
+클라이언트 반환값 차이(1.x는 3개, 2.x는 2개)를 흡수해 접속합니다.
+
+오케스트레이터와 LLM까지 연결한 실행 순서는
+[로컬 전체 파이프라인 실행](../development/local-full-pipeline.md)을 따릅니다.
 
 ### 실제 모드 실행 조건
 
@@ -292,7 +356,8 @@ FakeDrone으로 확인할 때는 `MIDDLEWARE_DRONES_CONFIG`를 지정하지 않�
   명령이 하나도 전송되지 않았으면 `N/A`입니다.
 - 종료 코드는 임무 `succeeded`이고 검사가 `PASS`일 때 0입니다. 기본 대기 시간은 900초(`--timeout`)입니다.
 - 실행 중 스크립트를 중단하면 서버가 함께 종료되어 비행 중인 기체는 마지막 목표에서 대기합니다.
-  이때는 MAVProxy나 ROS 2 서비스로 직접 착륙시켜야 합니다.
+  이때는 직접 착륙시켜야 합니다([수동 착륙](../development/local-full-pipeline.md#서버-중단-시-수동-착륙)).
+  `server_stopping` 이벤트에 그때 실행 중이던 작업이 남습니다.
 - EventLog 사본은 시작 시점의 파일 크기 이후만 복사하므로, 같은 로그 경로를 쓰는 서버를 동시에
   실행하지 않습니다.
 
@@ -317,7 +382,8 @@ FakeDrone 결과는 실제 비행 성공의 근거가 아닙니다.
 ## 제외 범위
 
 - 오케스트레이터 연결 변경과 프롬프트
+- HTTP 인증, TLS
 - 드론 간 수직 분리 강제 (구역 할당 계층에서 예정)
 - 장애 주입, Fallback, 재배정
 - 커버리지 등 KPI 계산
-- HTTP API 라우트, Docker Compose 통합, 상태 영속화
+- HTTP API 라우트, Docker Compose 통합, 상태 영속화(HTTP 서버를 다시 시작하면 임무 상태가 사라짐)

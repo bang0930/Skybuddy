@@ -31,6 +31,10 @@
 | F4 | 2대 동시 실행 (`--drones drone-01,drone-02`) | 검증 | 검증 (C, 16/16 성공) | 증거 스크립트 시나리오 C, `test_mission_service.py` |
 | F5 | 명령이 등록된 drone_id·protocol·binding으로만 실행됨 (식별자 혼선 없음) | 검증 | 검증 (A, B, C 모두 PASS, 불일치 0) | `test_integration_evidence.py`, summary의 검사 |
 | F6 | 프로토콜별 상위 제어 경로 사용 (MAVLink `SET_POSITION_TARGET_GLOBAL_INT`, AP_DDS `/ap/cmd_gps_pose`) | 검증 불가 | 부분 (C) | FakeDrone에는 프로토콜이 없음. 실제: AP_DDS는 토픽 캡처로 확인, MAVLink는 binding과 어댑터 출력만 있고 메시지 캡처 없음 (5절) |
+| F7 | HTTP MCP(`MCP_TRANSPORT=http`, `/mcp`)로 F1과 같은 흐름 | 검증 | 미검증 | `test_mcp_http.py`, `check_mvp_pipeline.py --url` (2026-11-02, FakeDrone) |
+| F8 | HTTP 모드에서 클라이언트 세션이 끝나도 비행 계속, 새 세션에서 같은 임무 상태 조회 | 검증 | 미검증 | `test_mcp_http.py::test_mission_continues_after_the_client_disconnects`. stdio에서는 K5 |
+| F9 | 오케스트레이터(LLM, mcp 2.x 클라이언트) → 미들웨어 HTTP 서버 → 드론 | 미검증 | 미검증 | 이 저장소에서는 실행하지 않음. mcp 2.3 클라이언트 → fastmcp 3.4 HTTP 서버 접속은 미들웨어 담당이 임시 래퍼로 확인 |
+| F10 | 서버 종료 시 실행 중 작업을 `server_stopping`에 기록하고 stderr 경고 후 연결 종료 (자동 착륙 없음) | 검증 | 미검증 | `test_mcp_http.py` (Ctrl+C 시점 비행 중·완료 후 두 경우) |
 
 ### 1-2. 연결과 상태 수집
 
@@ -63,6 +67,8 @@
 |---|---|---|---|---|
 | E1 | Python 3.10에서 미들웨어 실행 | 부분 | 검증 (시스템 Python 3.10.12) | 정적 검사만 (`test_python310_compat.py`). 개발 PC는 3.13 |
 | E2 | 미들웨어와 어댑터를 같은 프로세스에서 import (`simulation_app_path`) | 미검증 | 검증 (A, B, C) | |
+| E3 | 잘못된 `MCP_TRANSPORT`·`MCP_PORT`는 드론 연결 전에 거부 (종료 코드 2) | 검증 | 해당 없음 (드론과 무관) | `test_mcp_http.py` |
+| E4 | stdio 스크립트가 export된 `MCP_TRANSPORT=http`의 영향을 받지 않음 | 검증 | 미검증 | `check_mvp_pipeline.py`를 `MCP_TRANSPORT=http` 환경에서 실행 (2026-11-02) |
 
 ### 1-5. 검증 불가와 범위 밖
 
@@ -86,7 +92,7 @@
 | 고도 | 홈 기준 상대 고도(`home_relative`), 30m 이상 |
 | 텔레메트리 | 공통 `Telemetry` 필드. AP_DDS는 위성 수, 진동 3축, clipping을 제공하지 않음 |
 | 배치 | 미들웨어가 어댑터를 같은 프로세스에서 import. 시뮬레이터와 같은 WSL 환경에서 실행해야 함 |
-| MCP 전송 | stdio |
+| MCP 전송 | stdio, streamable HTTP(`/mcp`, 기본 `127.0.0.1:9000`, 인증 없음). `MCP_TRANSPORT`로 선택 ([mcp-tools.md](mcp-tools.md#전송-방식)) |
 
 ## 3. 버전 제약
 
@@ -99,7 +105,8 @@
 | ArduPilot | drone1 ArduCopter 4.3.0, drone2 4.7.1 (`--enable-DDS`) | AP_DDS 이륙 서비스는 4.6 이상 |
 | pymavlink | `>=2.4.37` | `services/simulation/requirements.txt` |
 | ardupilot_msgs, Micro XRCE-DDS Agent | ArduPilot 4.7.1 소스 빌드, UDP 2019 | `INTERFACE.md` 0-1 |
-| mcp, fastmcp | `mcp>=1.29,<2.0`, `fastmcp>=3.4,<4.0` | Python 3.10 이상 지원 |
+| mcp, fastmcp | `mcp>=1.29,<2.0`, `fastmcp>=3.4,<4.0` | Python 3.10 이상 지원. 오케스트레이터는 `mcp>=1.0`이라 새로 설치하면 2.x가 들어오고, #38의 HTTP 접속 코드는 2.x에서만 동작하므로 두 서비스는 서로 다른 가상환경으로 실행 |
+| Docker 이미지 | `python:3.10.12-slim` (`compose.yaml`, `docker/*.Dockerfile`, `.env.example`) | 실제 모드 실행 환경(시스템 Python 3.10.12)과 맞춤. 오케스트레이터 의존성 `google-genai` 최신 2.34는 3.11 이상이 필요해 3.10에서는 pip가 2.33.0을 설치 |
 | pydantic | `>=2.10,<3.0` | |
 | shapely | `>=2.0,<3.0` | 최신 2.2는 Python 3.11 이상이 필요하므로 3.10에서는 pip가 2.1.x를 설치해야 함. #32부터 서버 런타임(`runtime/waypoints.py`, `runtime/coverage.py`)이 import하므로 실제 모드의 시스템 Python 3.10에도 설치되어 있어야 함 (3.10 + shapely 2.1.x 조합은 미검증) |
 
@@ -111,12 +118,14 @@
 | K2 | 부팅 직후 GUIDED 전환 거부, NAV_TAKEOFF 거부 | takeoff 예외 → 작업 `failed`, 드론 `unavailable` | SITL 준비 완료(`start_hetero_sim.sh`) 후 실행. 실패한 드론은 서버를 다시 시작해야 재배정 가능 |
 | K3 | DDS Agent 미기동, ROS 환경 미소싱 | `Ros2Drone` 연결이 30초 뒤 실패하거나 import 실패 → `connect_error` | 기동 순서 AirSim → Agent → SITL, `source` 2개 확인 |
 | K4 | AirSim lock-step | SITL 하나라도 꺼지면 시뮬레이션 정지 | 1대 시나리오에서도 SITL 2대를 모두 띄움. 선택하지 않은 드론은 미들웨어에 등록하지 않을 뿐임 |
-| K5 | 실행 중 스크립트·서버 중단 | Dispatcher 스레드가 함께 종료되어 기체가 마지막 목표에서 대기 | MAVProxy 또는 ROS 2 서비스로 직접 착륙 |
+| K5 | 실행 중 스크립트·서버 중단 | Dispatcher 스레드가 함께 종료되어 기체가 마지막 목표에서 대기 | MAVProxy 또는 ROS 2 서비스로 직접 착륙 ([절차](../development/local-full-pipeline.md#서버-중단-시-수동-착륙)). HTTP 모드에서는 클라이언트 종료로는 생기지 않고 서버를 내릴 때만 생김. 그때 실행 중이던 작업이 `server_stopping`에 남음 |
 | K6 | goto 제한 시간 | 실측 속도(2.7~4.8m/s)보다 느리면 `WAYPOINT_TIMEOUT` | 구간 제한 시간 = max(60초, 거리 ÷ 2.0m/s). 설정 파일 `dispatcher`로 조정 |
 | K7 | Python 버전 불일치 | 3.11+ venv에서 `rclpy` import 실패 | 시스템 `python3`(3.10) 사용 |
 | K8 | 증거 수집 동시 실행 | 같은 EventLog 경로를 쓰는 서버가 둘이면 사본에 다른 실행의 이벤트가 섞임 | 한 번에 하나씩 실행하거나 `MIDDLEWARE_EVENT_LOG`를 분리 |
 | K9 | AP_DDS `gps_fix_type`, `gps_eph`가 항상 `null` (1차 실행에서 발견) | `Ros2Drone`이 `/ap/navsat/navsat0`를 받지 못한 것으로 보임. capabilities에는 지원 필드로 올라가 있어 계속 `temporarily_unavailable`로 보고됨 | 시뮬레이션 담당이 `ros2 topic list`로 토픽 이름과 발행 여부를 확인. 발행되지 않는 것이 맞다면 `AP_DDS_CAPABILITIES`에서 두 필드를 빼서 `unsupported`로 보고 |
 | K10 | AP_DDS 좌표 정밀도 (1차 실행에서 발견) | AP_DDS 위경도가 모두 float32로 표현되는 값. 이 위치에서 해상도는 위도 약 0.42m, 경도 약 1.4m (MAVLink는 약 1cm) | 도달 반경 3m 판정에는 영향 없음. 커버리지·경로 효율 KPI와 #20 정합성 허용 오차를 정할 때 반영. 원인(ArduPilot AP_DDS 발행 형식) 확인 필요 |
+| K11 | HTTP 상주 서버의 임무 상태 누적 | `get_mission_status`의 `state`는 서버 시작 후 그 임무의 모든 작업으로 계산하므로, 앞 계획의 작업이 실패했으면 이후 계획이 성공해도 `failed`. 실패한 드론도 서버를 다시 시작할 때까지 `unavailable` | 이번 계획의 `task_id`로 `tasks`를 골라 판단(`check_mvp_pipeline.py`). 오케스트레이터도 같은 방식이 필요 |
+| K12 | 서버 종료가 블로킹 명령을 기다림 | Ctrl+C 후 takeoff·land가 진행 중이면 `close_all()`이 그 명령이 끝날 때까지 대기(land는 최대 `landing_timeout_s`) | 기다리지 않으려면 Ctrl+C를 한 번 더 누름. 기록(`server_stopping`)은 대기 전에 남음 |
 
 ### 4-1. K1 블로킹 명령 중 연결 판정
 

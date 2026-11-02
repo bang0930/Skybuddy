@@ -10,7 +10,7 @@ services:
       dockerfile: docker/orchestrator.Dockerfile
       args:
         # 팀 공통 Python 버전이 확정되면 .env에서 한 번에 변경할 수 있다.
-        PYTHON_VERSION: ${PYTHON_VERSION:-3.11-slim}
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.10.12-slim}
     # 호스트의 8001 포트를 컨테이너의 8001 포트에 연결한다.
     ports:
       - "${ORCHESTRATOR_PORT:-8001}:8001"
@@ -39,7 +39,7 @@ services:
       context: .
       dockerfile: docker/middleware.Dockerfile
       args:
-        PYTHON_VERSION: ${PYTHON_VERSION:-3.11-slim}
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.10.12-slim}
     ports:
       - "${MIDDLEWARE_PORT:-8000}:8000"
     environment:
