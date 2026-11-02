@@ -30,7 +30,7 @@
 | F3 | AP_DDS 1대 단일 흐름 (`--drones drone-02`) | 검증 | 검증 (B, 8/8 성공) | 증거 스크립트 시나리오 B |
 | F4 | 2대 동시 실행 (`--drones drone-01,drone-02`) | 검증 | 검증 (C, 16/16 성공) | 증거 스크립트 시나리오 C, `test_mission_service.py` |
 | F5 | 명령이 등록된 drone_id·protocol·binding으로만 실행됨 (식별자 혼선 없음) | 검증 | 검증 (A, B, C 모두 PASS, 불일치 0) | `test_integration_evidence.py`, summary의 검사 |
-| F6 | 프로토콜별 상위 제어 경로 사용 (MAVLink `SET_POSITION_TARGET_GLOBAL_INT`, AP_DDS `/ap/cmd_gps_pose`) | 검증 불가 | 부분 (C) | FakeDrone에는 프로토콜이 없음. 실제: AP_DDS는 토픽 캡처로 확인, MAVLink는 binding과 어댑터 출력만 있고 메시지 캡처 없음 (5절) |
+| F6 | 프로토콜별 상위 제어 경로 사용 (MAVLink `SET_POSITION_TARGET_GLOBAL_INT`, AP_DDS `/ap/cmd_gps_pose`) | 검증 불가 | 부분 (C) | FakeDrone에는 프로토콜이 없음. 실제: AP_DDS는 토픽 캡처로 확인, MAVLink는 binding과 어댑터 출력만 있고 메시지 캡처 없음 (5절). 전달 방식 비교: [목표점 전달 방식](mavlink-adapter.md#목표점-전달-방식) |
 
 ### 1-2. 연결과 상태 수집
 
@@ -50,7 +50,7 @@
 |---|---|---|---|---|
 | C1 | 계획 → MissionTask → `DroneInterface` 호출 변환, 30m 미만·`msl` 거부 | 검증 | 부분 (정상 변환만 실행. 거부 경로는 실제 비행과 무관) | `test_drone_interface_commands.py`, `test_plan_validation.py` |
 | C2 | takeoff 95% 고도 도달 후 반환 → `sent → succeeded` | 검증 | 검증 (4회, 12.8~20.6초) | `test_mission_service.py` (상태 전이), FakeDrone이 같은 완료 기준 |
-| C3 | goto 도달 판정(반경 3m), 구간 거리 비례 제한 시간 | 검증 | 부분 (24회 모두 도달, 3.9~7.5초. 시간 초과 경로는 발생 안 함) | `test_mission_service.py` (`test_long_transit_legs_...`, `test_lost_link_...`) |
+| C3 | goto 도달 판정(반경 3m), 구간 거리 비례 제한 시간 | 검증 | 부분 (24회 모두 도달, 3.9~7.5초. 시간 초과 경로는 발생 안 함) | `test_mission_service.py` (`test_long_transit_legs_...`, `test_lost_link_...`). Mission 방식과의 비교: [목표점 전달 방식](mavlink-adapter.md#목표점-전달-방식) |
 | C4 | land 고도 비례 대기(1m당 4초, 최소 60초), 시동 해제 확인 | 검증 | 검증 (4회, 32.6~60.1초. 대기 한도 120초, 200초 이내) | `test_fake_drone_contract.py` (`test_landing_timeout_matches_simulation_rule`) |
 | C5 | 실패 시 남은 명령 `TASK_ABORTED`, 착륙 후 미확인 시 disarm, 드론 `unavailable` | 검증 | 미검증 (실패 없음) | `test_mission_service.py` |
 | C6 | 두 드론 스레드의 동시 어댑터 접근 직렬화 (pymavlink, rclpy) | 검증 불가 | 부분 (C 1회, 약 2분 동시 비행 중 오류 없음) | FakeDrone은 스레드 문제가 없음 |
@@ -107,11 +107,11 @@
 
 | # | 지점 | 증상 | 대응 |
 |---|---|---|---|
-| K1 | 블로킹 명령 중 텔레메트리 미수집 | land 전체 동안 상태 조회가 `disconnected`로 보고됨(실측 MAVLink 약 55초, AP_DDS 약 29~36초). takeoff 앞부분도 같은 구조지만 1차 실행에서는 GUIDED 전환이 즉시 끝나 발생하지 않음 | 4-1 참고. 현재는 증거 summary의 `disconnected` 구간과 명령 단계로 구분 |
+| K1 | 블로킹 명령 중 텔레메트리 미수집 | land 전체 동안 상태 조회가 `disconnected`로 보고됨(실측 MAVLink 약 55초, AP_DDS 약 29~36초). takeoff 앞부분도 같은 구조지만 1차 실행에서는 GUIDED 전환이 즉시 끝나 발생하지 않음 | 4-1 참고. 현재는 증거 summary의 `disconnected` 구간과 명령 단계로 구분. Mission 방식에서의 영향: [목표점 전달 방식](mavlink-adapter.md#목표점-전달-방식) |
 | K2 | 부팅 직후 GUIDED 전환 거부, NAV_TAKEOFF 거부 | takeoff 예외 → 작업 `failed`, 드론 `unavailable` | SITL 준비 완료(`start_hetero_sim.sh`) 후 실행. 실패한 드론은 서버를 다시 시작해야 재배정 가능 |
 | K3 | DDS Agent 미기동, ROS 환경 미소싱 | `Ros2Drone` 연결이 30초 뒤 실패하거나 import 실패 → `connect_error` | 기동 순서 AirSim → Agent → SITL, `source` 2개 확인 |
 | K4 | AirSim lock-step | SITL 하나라도 꺼지면 시뮬레이션 정지 | 1대 시나리오에서도 SITL 2대를 모두 띄움. 선택하지 않은 드론은 미들웨어에 등록하지 않을 뿐임 |
-| K5 | 실행 중 스크립트·서버 중단 | Dispatcher 스레드가 함께 종료되어 기체가 마지막 목표에서 대기 | MAVProxy 또는 ROS 2 서비스로 직접 착륙 |
+| K5 | 실행 중 스크립트·서버 중단 | Dispatcher 스레드가 함께 종료되어 기체가 마지막 목표에서 대기 | MAVProxy 또는 ROS 2 서비스로 직접 착륙. 통신 단절 시 방식별 동작: [목표점 전달 방식](mavlink-adapter.md#목표점-전달-방식) |
 | K6 | goto 제한 시간 | 실측 속도(2.7~4.8m/s)보다 느리면 `WAYPOINT_TIMEOUT` | 구간 제한 시간 = max(60초, 거리 ÷ 2.0m/s). 설정 파일 `dispatcher`로 조정 |
 | K7 | Python 버전 불일치 | 3.11+ venv에서 `rclpy` import 실패 | 시스템 `python3`(3.10) 사용 |
 | K8 | 증거 수집 동시 실행 | 같은 EventLog 경로를 쓰는 서버가 둘이면 사본에 다른 실행의 이벤트가 섞임 | 한 번에 하나씩 실행하거나 `MIDDLEWARE_EVENT_LOG`를 분리 |
