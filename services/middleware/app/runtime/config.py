@@ -22,6 +22,9 @@ class DispatcherConfig(ContractModel):
     ``reach_threshold_m`` of the target in time. The allowed time is the larger of
     ``waypoint_timeout_s`` and ``leg distance / min_ground_speed_m_s``, so long transit
     legs (home -> area, area -> home) are not cut off by the per-waypoint default.
+
+    Link loss is judged only while polling a ``goto`` leg. ``takeoff``/``land`` block the
+    client and read no telemetry in between (K1), so silence there is not a lost link.
     """
 
     reach_threshold_m: float = Field(
@@ -37,6 +40,25 @@ class DispatcherConfig(ContractModel):
         description=(
             "Slowest expected horizontal speed (m/s). Measured SITL speeds were "
             "2.7~4.8 m/s, so 2.0 leaves margin."
+        ),
+    )
+    link_loss_timeout_s: float = Field(
+        default=5.0,
+        gt=0,
+        le=600,
+        description=(
+            "A goto leg fails with LINK_LOST once no telemetry arrives for this long (s). "
+            "Matches ArduPilot's default FS_GCS_TIMEOUT so the middleware notices the loss "
+            "about when the vehicle's own failsafe triggers."
+        ),
+    )
+    link_recovery_timeout_s: float = Field(
+        default=20.0,
+        gt=0,
+        le=3_600,
+        description=(
+            "After LINK_LOST, how long to wait for telemetry to come back before giving the "
+            "drone up to the vehicle failsafe (s). On recovery it returns home and lands."
         ),
     )
 

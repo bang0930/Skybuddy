@@ -192,6 +192,47 @@ takeoff(탐색 고도) → goto(구역 웨이포인트) × N → 귀환 → land
   제외됩니다.
 - 드론 운용 상태: 수락 시 `assigned`, 귀환 구간 `returning`, 성공 후 `available`.
 
+### 통신 두절 처리
+
+링크가 끊기면 미들웨어가 보내는 명령도 기체에 닿지 않습니다. 그래서 역할을 둘로 나눕니다.
+
+| 담당 | 하는 일 |
+|---|---|
+| 기체 (ArduPilot failsafe) | 링크가 끊긴 동안 스스로 귀환(RTL)하거나 착륙. 아래 파라미터 필요 |
+| 미들웨어 (Dispatcher) | 두절 감지, 작업 중단과 기록, 복구 대기, 복구되면 귀환 후 착륙 |
+
+미들웨어 동작:
+
+1. `goto` 구간을 폴링하는 동안 텔레메트리가 `link_loss_timeout_s`(기본 5초) 동안 한 번도 오지
+   않으면 그 명령을 `failed(LINK_LOST)`로 끝냅니다. 남은 명령은 `failed(TASK_ABORTED)`가 되고
+   드론은 `returning`으로 바뀝니다.
+   - `takeoff`·`land`처럼 블로킹 명령 중에는 원래 텔레메트리를 읽지 않으므로(K1) 두절로 판정하지
+     않습니다. 이 구간의 두절은 어댑터가 예외나 False로 알려 주고, 기존 실패 처리(비상 착륙)를 탑니다.
+   - 구간 제한 시간이 `link_loss_timeout_s`보다 먼저 끝나면 기존처럼 `WAYPOINT_TIMEOUT`입니다.
+2. 두절 중에는 착륙 명령을 보내지 않습니다(닿지 않음). 최대 `link_recovery_timeout_s`(기본
+   20초) 동안 텔레메트리가 돌아오는지 기다립니다.
+3. 돌아오면:
+   - 고도가 1m 미만이면 기체 failsafe가 이미 착륙시킨 것으로 보고 아무 명령도 보내지 않습니다.
+   - 아니면 작업의 귀환 구간(`goto(home)` 또는 `return_home`)을 다시 보내고 도착을 기다린 뒤
+     착륙합니다. 착륙이 확인되지 않으면 disarm합니다. 귀환 중 다시 끊기면 기체 failsafe에 맡깁니다.
+4. 돌아오지 않으면 `link_not_restored`를 남기고 기체 failsafe에 맡깁니다.
+5. 어느 경우든 작업은 `failed`, 드론은 `unavailable`로 끝나 점검 전까지 배정에서 빠집니다.
+
+기체 쪽 파라미터(시뮬레이션 담당이 SITL 두 대에 설정):
+
+| 파라미터 | 권장값 | 의미 |
+|---|---|---|
+| `FS_GCS_ENABLE` | `1` | GCS(지상국) 링크 두절 시 RTL. 착륙 지점에 가까우면 착륙 |
+| `FS_GCS_TIMEOUT` | `5` | 두절 판정 시간(초). `link_loss_timeout_s`와 같게 |
+| `RTL_ALT` | 작업 고도 이상 (cm) | 귀환 고도. 드론 간 고도 분리를 고려 |
+
+- MAVLink 드론은 GCS 하트비트로 링크를 판단하므로 MAVProxy·미들웨어 연결이 끊기면 작동합니다.
+- AP_DDS 드론에서 DDS 링크 두절이 `FS_GCS`를 발동시키는지는 확인되지 않았습니다
+  ([verification-status.md](verification-status.md) K13). 발동하지 않으면 미들웨어의 복구 대기
+  동안 기체는 마지막 목표에 머뭅니다.
+- `goto()`는 비행 모드를 바꾸지 않습니다. 복구 시 기체가 RTL 모드면 미들웨어의 `goto(home)`은
+  무시되지만, RTL이 같은 홈으로 가므로 도착 판정은 그대로 동작합니다.
+
 ## 실행 로그
 
 `MIDDLEWARE_EVENT_LOG`(기본 `services/middleware/logs/mission-events.jsonl`)에 한 줄당 한
@@ -206,6 +247,10 @@ takeoff(탐색 고도) → goto(구역 웨이포인트) × N → 귀환 → land
 | `command_transition` | 명령 ID·종류, 이전·현재 상태, 시각, `elapsed_since_sent_s`, 오류. `sent`에는 실제로 호출한 클라이언트(`target`: drone_id, protocol, binding) |
 | `task_finished` | 작업 최종 상태 |
 | `emergency_stop` | 비상 정지 대상과 착륙 확인 여부 |
+| `link_lost` | 두절 판정된 명령(`command_id`), 복구 대기 시간(`wait_s`) |
+| `link_restored` / `link_not_restored` | 두절 지속 시간(`outage_s`) / 기다린 시간(`waited_s`) |
+| `link_recovery_finished` | `outcome`(`landed`, `disarmed`, `already_on_ground`, `link_lost_again`), 귀환 구간 결과(`return_leg`) |
+| `link_recovery_return_failed` | 복구 후 귀환 명령 호출 오류 |
 | `server_stopping` | `transport`, 종료 시점에 실행 중이던 작업(`running_tasks`: `mission_id`, `task_id`, `drone_id`, `area_id`, `current_command`) |
 
 LLM 원본 출력과 모델 설정은 오케스트레이터에서 기록해야 합니다. 미들웨어는 도구 호출로
@@ -229,9 +274,14 @@ LLM 원본 출력과 모델 설정은 오케스트레이터에서 기록해야 �
 "dispatcher": {
   "reach_threshold_m": 3.0,
   "waypoint_timeout_s": 60.0,
-  "min_ground_speed_m_s": 2.0
+  "min_ground_speed_m_s": 2.0,
+  "link_loss_timeout_s": 5.0,
+  "link_recovery_timeout_s": 20.0
 }
 ```
+
+`link_loss_timeout_s`는 ArduPilot `FS_GCS_TIMEOUT` 기본값(5초)과 맞춘 값입니다. 바꾼다면 기체
+파라미터도 같이 맞춥니다([통신 두절 처리](#통신-두절-처리)).
 
 `waypoints` 항목으로 웨이포인트 생성 방식을 고릅니다. 생략하면 아래 기본값입니다.
 `side_overlap`과 `max_leg_m`의 기본값은 `generate_coverage_waypoints()`의 기본값과 같습니다.
