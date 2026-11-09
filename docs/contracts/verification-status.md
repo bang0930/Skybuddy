@@ -60,6 +60,7 @@
 | C6 | 두 드론 스레드의 동시 어댑터 접근 직렬화 (pymavlink, rclpy) | 검증 불가 | 부분 (C 1회, 약 2분 동시 비행 중 오류 없음) | FakeDrone은 스레드 문제가 없음 |
 | C7 | 어댑터 `print()`가 MCP stdio를 오염시키지 않음 | 미검증 | 검증 (A, B, C: 어댑터 출력이 `server.stderr.log`에만 있고 도구 응답 정상) | FakeDrone은 출력하지 않음. 실제 실행이 끝까지 되고 `server.stderr.log`에 어댑터 출력이 남으면 확인 |
 | C8 | `return_home()` 사용 | 범위 밖 | 범위 밖 | 시뮬레이션 어댑터에 메서드가 아직 없음. `goto(home)`으로 대체 |
+| C9 | goto 중 텔레메트리 `link_loss_timeout_s` 두절 → `LINK_LOST`, 두절 중 명령 없음, 복구 시 귀환 후 착륙, 미복구·이미 착륙 시 명령 없음, 드론 `unavailable` | 검증 | 미검증 (MAVProxy·DDS Agent를 내려 링크만 끊는 시험 필요) | `test_link_loss.py` (2026-11-09). FakeDrone `link_up=False`, failsafe 착륙은 상태를 직접 바꿔 흉내 |
 
 ### 1-4. 실행 환경
 
@@ -126,6 +127,7 @@
 | K10 | AP_DDS 좌표 정밀도 (1차 실행에서 발견) | AP_DDS 위경도가 모두 float32로 표현되는 값. 이 위치에서 해상도는 위도 약 0.42m, 경도 약 1.4m (MAVLink는 약 1cm) | 도달 반경 3m 판정에는 영향 없음. 커버리지·경로 효율 KPI와 #20 정합성 허용 오차를 정할 때 반영. 원인(ArduPilot AP_DDS 발행 형식) 확인 필요 |
 | K11 | HTTP 상주 서버의 임무 상태 누적 | `get_mission_status`의 `state`는 서버 시작 후 그 임무의 모든 작업으로 계산하므로, 앞 계획의 작업이 실패했으면 이후 계획이 성공해도 `failed`. 실패한 드론도 서버를 다시 시작할 때까지 `unavailable` | 이번 계획의 `task_id`로 `tasks`를 골라 판단(`check_mvp_pipeline.py`). 오케스트레이터도 같은 방식이 필요 |
 | K12 | 서버 종료가 블로킹 명령을 기다림 | Ctrl+C 후 takeoff·land가 진행 중이면 `close_all()`이 그 명령이 끝날 때까지 대기(land는 최대 `landing_timeout_s`) | 기다리지 않으려면 Ctrl+C를 한 번 더 누름. 기록(`server_stopping`)은 대기 전에 남음 |
+| K13 | 통신 두절 시 기체 쪽 동작 (C9) | 미들웨어는 두절 중 명령을 보내지 않으므로 그동안의 귀환은 ArduPilot `FS_GCS_ENABLE`에 달려 있음. SITL 두 대에 설정되어 있는지, AP_DDS 링크 두절이 GCS failsafe를 발동시키는지 미확인 | 시뮬레이션 담당이 파라미터를 설정하고(`mcp-tools.md` 통신 두절 처리), 비행 중 MAVProxy·DDS Agent를 내려 RTL 여부 확인 |
 
 ### 4-1. K1 블로킹 명령 중 연결 판정
 
