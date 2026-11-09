@@ -44,7 +44,7 @@ def make_drone(connection_string, drone_id, protocol='mavlink'):
     이게 "미들웨어는 프로토콜을 몰라도 된다"는 주장의 실물 증거다."""
     if protocol == 'mavlink':
         from mavlink_drone import MavlinkDrone
-        return MavlinkDrone(connection_string)
+        return MavlinkDrone(connection_string, drone_id=drone_id)
     if protocol == 'ros2':
         # rclpy 는 ROS 환경을 소싱해야 import 되므로 필요할 때만 불러온다.
         # (MAVLink 단독 실행 시 ROS 없이도 동작해야 한다)
@@ -318,7 +318,7 @@ LOG_FIELDS = ["elapsed_s", "drone_id", "waypoint", "lat", "lon", "relative_alt_m
               "satellites_visible", "gps_eph", "battery_voltage_v",
               "battery_remaining_pct",
               "vibration_x", "vibration_y", "vibration_z", "clipping",
-              "timestamp"]
+              "link_quality_pct", "timestamp"]
 
 SUMMARY_FIELDS = ["drone_id", "waypoint", "north_m", "east_m", "target_lat", "target_lon",
                   "time_to_reach_s", "straight_line_distance_m", "path_distance_m",
