@@ -53,7 +53,7 @@ class DispatcherConfig(ContractModel):
         ),
     )
     link_recovery_timeout_s: float = Field(
-        default=120.0,
+        default=20.0,
         gt=0,
         le=3_600,
         description=(

@@ -210,7 +210,7 @@ takeoff(탐색 고도) → goto(구역 웨이포인트) × N → 귀환 → land
      않습니다. 이 구간의 두절은 어댑터가 예외나 False로 알려 주고, 기존 실패 처리(비상 착륙)를 탑니다.
    - 구간 제한 시간이 `link_loss_timeout_s`보다 먼저 끝나면 기존처럼 `WAYPOINT_TIMEOUT`입니다.
 2. 두절 중에는 착륙 명령을 보내지 않습니다(닿지 않음). 최대 `link_recovery_timeout_s`(기본
-   120초) 동안 텔레메트리가 돌아오는지 기다립니다.
+   20초) 동안 텔레메트리가 돌아오는지 기다립니다.
 3. 돌아오면:
    - 고도가 1m 미만이면 기체 failsafe가 이미 착륙시킨 것으로 보고 아무 명령도 보내지 않습니다.
    - 아니면 작업의 귀환 구간(`goto(home)` 또는 `return_home`)을 다시 보내고 도착을 기다린 뒤
@@ -276,7 +276,7 @@ LLM 원본 출력과 모델 설정은 오케스트레이터에서 기록해야 �
   "waypoint_timeout_s": 60.0,
   "min_ground_speed_m_s": 2.0,
   "link_loss_timeout_s": 5.0,
-  "link_recovery_timeout_s": 120.0
+  "link_recovery_timeout_s": 20.0
 }
 ```
 
