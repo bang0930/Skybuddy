@@ -2,10 +2,8 @@
 
 ANTHROPIC_API_KEY와 `pip install anthropic`이 준비되면, GeminiProvider의
 decide()/continue_with_results()/_step() 구조를 그대로 참고해서 채우면 된다:
-  - decide(): anthropic 클라이언트로 messages.create(tools=[...]) 호출.
-    MCP 도구의 input_schema는 이미 JSON Schema라 Gemini 때와 달리
-    Schema.from_json_schema 변환 없이 그대로 tool["input_schema"]에 넣을 수 있다.
-    응답의 content 중 type == "tool_use" 블록들을 ToolCall로 변환.
+  - decide(): anthropic 클라이언트로 messages.create(system=SYSTEM_PROMPT, tools=[...]) 호출.
+    SYSTEM_PROMPT는 app.providers.prompts에 있으며 Gemini와 같은 문구를 쓴다.
   - continue_with_results(): tool_use_id별로 {"type": "tool_result", ...} 블록을
     만들어 이전 assistant 메시지 뒤에 이어붙여 다시 messages.create 호출.
     응답에 또 tool_use가 있으면 tool_calls를 채운 Decision을, 없으면

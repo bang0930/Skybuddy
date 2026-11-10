@@ -7,7 +7,7 @@ from google.genai import types
 from mcp.types import Tool as McpTool
 
 from app.providers.base import Decision, LLMProvider, ToolCall
-
+from app.providers.prompts import SYSTEM_PROMPT
 _MODEL = "models/gemini-3.6-flash"
 
 # 우리는 MCP session.call_tool()로 도구를 직접 실행하므로, SDK가 제공하는
@@ -72,7 +72,7 @@ class GeminiProvider(LLMProvider):
             model=_MODEL,
             contents=contents,
             config=types.GenerateContentConfig(
-                tools=gemini_tools, automatic_function_calling=_DISABLE_AFC
+                system_instruction=SYSTEM_PROMPT, tools=gemini_tools, automatic_function_calling=_DISABLE_AFC
             ),
         )
 
