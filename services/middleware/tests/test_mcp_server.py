@@ -14,14 +14,19 @@ def run(coroutine):
     return asyncio.run(coroutine)
 
 
-def test_exposes_three_tools_with_input_schemas(service) -> None:
+def test_exposes_four_tools_with_input_schemas(service) -> None:
     async def list_tools():
         async with Client(create_mcp_server(service)) as client:
             return await client.list_tools()
 
     tools = {tool.name: tool for tool in run(list_tools())}
 
-    assert set(tools) == {"get_mission_context", "submit_mission_plan", "get_mission_status"}
+    assert set(tools) == {
+        "list_missions",
+        "get_mission_context",
+        "submit_mission_plan",
+        "get_mission_status",
+    }
     submit = tools["submit_mission_plan"].inputSchema
     # generated_at is optional: an LLM cannot know the current time.
     assert submit["required"] == ["mission_id", "assignments"]
@@ -98,3 +103,19 @@ def test_server_fills_generated_at_when_omitted(service, event_log) -> None:
     assert submitted["generated_at_filled_by_server"] is True
     # The flight continues in the background; let it finish before teardown.
     wait_for_completion(service)
+
+
+def test_list_missions_returns_loaded_missions(service) -> None:
+    async def call():
+        async with Client(create_mcp_server(service)) as client:
+            return (await client.call_tool("list_missions", {})).data
+
+    result = run(call())
+
+    assert result["missions"] == [
+        {
+            "mission_id": "mission-001",
+            "instruction": "북쪽과 남쪽 구역을 나눠 수색해 줘",
+            "area_ids": ["area-north", "area-south"],
+        }
+    ]

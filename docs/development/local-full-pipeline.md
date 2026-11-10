@@ -174,8 +174,10 @@ curl -s -X POST -G http://127.0.0.1:8001/command \
 
 브라우저에서 `http://127.0.0.1:8001/docs`로 호출해도 됩니다.
 
-- 현재 오케스트레이터에는 시스템 프롬프트가 없어 LLM이 임무 ID를 모릅니다. 명령에
-  `mission-001`을 넣어야 합니다.
+- 명령에 임무 ID를 적지 않아도 됩니다. 오케스트레이터가 `list_missions`로 임무를 확인하며,
+  임무가 여러 개이고 어느 것인지 분명하지 않으면 되묻습니다.
+- 방향("북쪽")은 구역 ID 이름(`area-north`)과 맞춰 고릅니다. 구역 ID가 방향을 나타내지 않으면
+  `area_id`를 직접 적습니다.
 - 응답이 `요청을 처리하는 데 5번의 시도로도 부족했습니다`여도 계획이 수락됐다면 비행은 계속됩니다.
   진행은 이벤트 로그(`tail -f services/middleware/logs/mission-events.jsonl`)나 "mission-001 상태
   알려줘" 같은 명령으로 확인합니다.
@@ -265,7 +267,7 @@ ros2 service call /ap/mode_switch ardupilot_msgs/srv/ModeSwitch "{mode: 9}"   # 
 | 드론이 `disconnected`, 계획이 `DRONE_DISCONNECTED`로 거부 | SITL·Agent가 준비되기 전에 서버를 띄움(K2, K3). 2단계 완료 후 서버 재시작 |
 | 계획이 `DRONE_NOT_AVAILABLE`로 거부 | 그 드론이 아직 비행 중이거나 이전 작업 실패로 `unavailable`. 실패라면 서버 재시작 |
 | 오케스트레이터 `too many values to unpack` | 오케스트레이터 가상환경의 `mcp`가 1.x. `pip install "mcp>=2"` |
-| 오케스트레이터 응답에 `UNKNOWN_MISSION` | 명령에 `mission-001`을 넣지 않아 LLM이 다른 ID를 씀 |
+| 오케스트레이터 응답에 `UNKNOWN_MISSION` | LLM이 도구 결과에 없는 임무 ID를 씀. 명령에 `mission-001`처럼 임무 ID를 직접 적어 다시 시도 |
 | 스크립트·서버를 비행 중에 중단함 | [서버 중단 시 수동 착륙](#서버-중단-시-수동-착륙) |
 
 ## 검증 상태
