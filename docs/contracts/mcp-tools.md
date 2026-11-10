@@ -76,6 +76,7 @@ Dispatcher 스레드는 프로세스와 함께 끝나므로 남은 드론은 마
 
 | 도구 | 입력 | 결과 |
 |---|---|---|
+| `list_missions` | 없음 | `missions[]` (`mission_id`, `instruction`, `area_ids`) |
 | `get_mission_context` | `mission_id` | `MissionContext` |
 | `submit_mission_plan` | `mission_id`, `assignments[]`, 선택 `generated_at` | `PlanSubmissionResult` |
 | `get_mission_status` | `mission_id` | `MissionStatusReport` |
@@ -89,6 +90,9 @@ Dispatcher 스레드는 프로세스와 함께 끝나므로 남은 드론은 마
 - 계획이 계약·검증을 통과하지 못하면 도구 오류가 아니라 `status="rejected"`와 `errors`를
   반환합니다. 오케스트레이터는 오류 내용을 보고 계획을 고쳐 다시 제출할 수 있습니다.
 - 로드되지 않은 `mission_id`로 context·status를 조회하면 MCP 도구 오류를 반환합니다.
+- `list_missions`는 `config/scenarios/*.json`에서 불러온 임무를 모두 돌려줍니다. 오케스트레이터는
+  사용자가 임무 ID를 말하지 않으면 이 도구로 먼저 확인하고, 임무가 여러 개이고 어느 것인지
+  분명하지 않으면 계획을 제출하지 않고 사용자에게 되묻습니다.
 
 ### 검증 오류 코드
 
