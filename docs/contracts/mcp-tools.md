@@ -78,6 +78,7 @@ Dispatcher 스레드는 프로세스와 함께 끝나므로 남은 드론은 마
 |---|---|---|
 | `list_missions` | 없음 | `missions[]` (`mission_id`, `instruction`, `area_ids`) |
 | `get_mission_context` | `mission_id` | `MissionContext` |
+| `split_search_area` | `mission_id`, `area_id`, 선택 `n_pieces`(2~10, 기본 2) | `status`(`split`/`rejected`), `areas[]`(`area_id`, `center`) 또는 `errors` |
 | `submit_mission_plan` | `mission_id`, `assignments[]`, 선택 `generated_at` | `PlanSubmissionResult` |
 | `get_mission_status` | `mission_id` | `MissionStatusReport` |
 
@@ -89,7 +90,7 @@ Dispatcher 스레드는 프로세스와 함께 끝나므로 남은 드론은 마
   `get_mission_status`로 확인합니다.
 - 계획이 계약·검증을 통과하지 못하면 도구 오류가 아니라 `status="rejected"`와 `errors`를
   반환합니다. 오케스트레이터는 오류 내용을 보고 계획을 고쳐 다시 제출할 수 있습니다.
-- 로드되지 않은 `mission_id`로 context·status를 조회하면 MCP 도구 오류를 반환합니다.
+- 로드되지 않은 `mission_id`로 context·status를 조회하거나 구역 분할을 요청하면 MCP 도구 오류를 반환합니다.
 - `list_missions`는 `config/scenarios/*.json`에서 불러온 임무를 모두 돌려줍니다. 오케스트레이터는
   사용자가 임무 ID를 말하지 않으면 이 도구로 먼저 확인하고, 임무가 여러 개이고 어느 것인지
   분명하지 않으면 계획을 제출하지 않고 사용자에게 되묻습니다.
@@ -114,6 +115,30 @@ Dispatcher 스레드는 프로세스와 함께 끝나므로 남은 드론은 마
 `INVALID_AREA_BOUNDARY`까지는 `validate_plan`이 검사하고, `WAYPOINT_CHECK_FAILED`는 그다음
 MissionTask를 만들 때 검사합니다. 둘 다 명령을 하나도 보내기 전에 계획 전체를 `rejected`로
 돌려보냅니다.
+
+### 구역 분할
+
+`split_search_area`는 구역 하나를 같은 면적의 하위 구역 n개로 나누고, 임무의 구역 목록에서
+원래 구역을 그 하위 구역들로 대체합니다.
+
+- 남북 방향 세로선으로 자릅니다. 면적은 위경도가 아니라 구역 중심 기준 미터 좌표로 계산합니다.
+- 하위 구역 이름은 `<area_id>-1`(가장 서쪽)부터 `<area_id>-n`까지이고, 탐색 고도와 기준은 원래
+  구역을 따릅니다. 결과의 `center`는 각 하위 구역의 무게중심입니다.
+- 원래 구역은 목록에서 빠지므로, 원래 구역과 하위 구역을 함께 배정해 같은 곳을 두 번 탐색할 수
+  없습니다.
+- 분할 결과는 메모리에만 있습니다. 서버를 다시 시작하면 시나리오 파일의 구역으로 돌아갑니다.
+- 분할할 수 없으면 도구 오류가 아니라 `status="rejected"`와 `errors`를 반환하고, 구역 목록은
+  바뀌지 않습니다.
+
+| 코드 | 의미 |
+|---|---|
+| `UNKNOWN_AREA` | 임무에 없는 구역 |
+| `INVALID_N_PIECES` | `n_pieces`가 2~10 범위 밖 |
+| `INVALID_AREA_BOUNDARY` | 구역 경계가 단순 다각형이 아님 |
+| `AREA_IN_USE` | 그 구역에서 실행 중인 작업이 있음 |
+| `SPLIT_NOT_CONTIGUOUS` | 오목한 구역이라 한 조각이 여러 덩어리로 나뉨. 조각 수를 줄이거나 다른 구역 사용 |
+| `AREA_ID_TAKEN` | 만들 하위 구역 이름이 이미 있음 |
+| `SPLIT_FAILED` | 하위 구역이 계약을 만족하지 못함 (이름 64자 초과, 꼭짓점 100개 초과 등) |
 
 ### 임무 상태
 
@@ -248,6 +273,8 @@ takeoff(탐색 고도) → goto(구역 웨이포인트) × N → 귀환 → land
 | `plan_submitted` | 제출 원본 `plan`, `attempt`(해당 임무 누적 제출 횟수), `generated_at_filled_by_server` |
 | `plan_rejected` | `errors` |
 | `plan_accepted` | 작업 목록, 생성된 명령 전체 |
+| `area_split` | 원래 구역(`base_area_id`), 하위 구역 목록(`area_ids`) |
+| `area_split_rejected` | 요청한 `area_id`, `n_pieces`, `errors` |
 | `command_transition` | 명령 ID·종류, 이전·현재 상태, 시각, `elapsed_since_sent_s`, 오류. `sent`에는 실제로 호출한 클라이언트(`target`: drone_id, protocol, binding) |
 | `task_finished` | 작업 최종 상태 |
 | `emergency_stop` | 비상 정지 대상과 착륙 확인 여부 |
