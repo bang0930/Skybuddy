@@ -1,8 +1,10 @@
 """SkyBuddy middleware MCP server.
 
-Exposes three tools to the LLM orchestrator:
+Exposes these tools to the LLM orchestrator:
 
+- ``list_missions``: missions loaded from the scenario files
 - ``get_mission_context``: drones and search areas the plan must refer to
+- ``split_search_area``: replace one search area with equal-area sub-areas
 - ``submit_mission_plan``: validate a drone-to-area plan and start execution
 - ``get_mission_status``: per-drone state and per-command results
 
@@ -193,6 +195,28 @@ def create_mcp_server(service: MissionService) -> FastMCP:
                 for scenario in service.scenarios.values()
             ]
         }
+
+    @mcp.tool()
+    def split_search_area(mission_id: str, area_id: str, n_pieces: int = 2) -> dict:
+        """탐색 구역 하나를 면적이 같은 n개의 하위 구역으로 나눕니다.
+
+        사용자가 한 구역을 여러 드론이 나눠 맡으라고 하면 submit_mission_plan보다 먼저
+        호출하세요. 나눈 구역은 "<area_id>-1"(가장 서쪽)부터 "<area_id>-n"(가장 동쪽)까지
+        새 area_id로 등록되고, 원래 area_id는 더 이상 배정할 수 없습니다. 계획에는
+        반환된 areas의 area_id를 사용하세요. center는 각 하위 구역의 중심 좌표입니다.
+
+        status가 "rejected"이면 errors의 code와 message를 확인하세요. 드론이 비행 중인
+        구역은 나눌 수 없습니다(AREA_IN_USE).
+
+        Args:
+            mission_id: 임무 식별자
+            area_id: 나눌 구역의 식별자 (get_mission_context 결과에 있는 값)
+            n_pieces: 나눌 개수 (2~10). 보통 이 구역에 배정할 드론 수입니다.
+        """
+        try:
+            return service.split_area(mission_id, area_id, n_pieces)
+        except UnknownMissionError as exc:
+            raise ToolError(str(exc.args[0])) from None
 
     return mcp
 

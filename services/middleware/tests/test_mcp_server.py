@@ -14,7 +14,7 @@ def run(coroutine):
     return asyncio.run(coroutine)
 
 
-def test_exposes_four_tools_with_input_schemas(service) -> None:
+def test_exposes_five_tools_with_input_schemas(service) -> None:
     async def list_tools():
         async with Client(create_mcp_server(service)) as client:
             return await client.list_tools()
@@ -24,6 +24,7 @@ def test_exposes_four_tools_with_input_schemas(service) -> None:
     assert set(tools) == {
         "list_missions",
         "get_mission_context",
+        "split_search_area",
         "submit_mission_plan",
         "get_mission_status",
     }
@@ -119,3 +120,37 @@ def test_list_missions_returns_loaded_missions(service) -> None:
             "area_ids": ["area-north", "area-south"],
         }
     ]
+
+
+def test_split_search_area_tool_registers_pieces_for_planning(service) -> None:
+    async def scenario():
+        async with Client(create_mcp_server(service)) as client:
+            tools = {tool.name: tool for tool in await client.list_tools()}
+            split = (await client.call_tool(
+                "split_search_area",
+                {"mission_id": "mission-001", "area_id": "area-north", "n_pieces": 2},
+            )).data
+            missions = (await client.call_tool("list_missions", {})).data
+            return tools["split_search_area"].inputSchema, split, missions
+
+    schema, split, missions = run(scenario())
+
+    assert schema["required"] == ["mission_id", "area_id"]
+    assert schema["properties"]["n_pieces"]["default"] == 2
+    assert split["status"] == "split"
+    assert [area["area_id"] for area in split["areas"]] == ["area-north-1", "area-north-2"]
+    assert missions["missions"][0]["area_ids"] == ["area-north-1", "area-north-2", "area-south"]
+
+
+def test_split_search_area_unknown_mission_is_a_tool_error(service) -> None:
+    async def call():
+        async with Client(create_mcp_server(service)) as client:
+            return await client.call_tool(
+                "split_search_area",
+                {"mission_id": "mission-404", "area_id": "area-north"},
+                raise_on_error=False,
+            )
+
+    result = run(call())
+    assert result.is_error
+    assert "mission-404" in result.content[0].text
