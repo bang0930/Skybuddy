@@ -175,6 +175,25 @@ def create_mcp_server(service: MissionService) -> FastMCP:
         except UnknownMissionError as exc:
             raise ToolError(str(exc.args[0])) from None
 
+    @mcp.tool()
+    def list_missions() -> dict:
+        """서버에 불러온 임무 목록을 조회합니다.
+
+        사용자가 임무 ID를 말하지 않았으면 가장 먼저 호출하세요. 다른 도구의
+        mission_id에는 이 목록에 있는 값만 사용할 수 있습니다. 임무가 여러 개이고
+        어느 것인지 분명하지 않다면 임의로 고르지 말고 사용자에게 물어보세요.
+        """
+        return {
+            "missions": [
+                {
+                    "mission_id": scenario.mission_id,
+                    "instruction": scenario.instruction,
+                    "area_ids": [area.area_id for area in scenario.search_areas],
+                }
+                for scenario in service.scenarios.values()
+            ]
+        }
+
     return mcp
 
 

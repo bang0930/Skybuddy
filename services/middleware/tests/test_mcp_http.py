@@ -231,7 +231,12 @@ def test_mission_continues_after_the_client_disconnects(http_server) -> None:
     # The first session is closed here; over stdio the server would be gone with it.
     status = run(later_session())
 
-    assert tools == {"get_mission_context", "submit_mission_plan", "get_mission_status"}
+    assert tools == {
+        "list_missions",
+        "get_mission_context",
+        "submit_mission_plan",
+        "get_mission_status",
+    }
     assert accepted["status"] == "accepted"
     assert status["state"] == "succeeded"
     assert {task["task_id"] for task in status["tasks"]} == {
