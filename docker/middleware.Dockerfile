@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Python 버전은 Compose의 build args 또는 docker build --build-arg로 바꿀 수 있다.
-ARG PYTHON_VERSION=3.11-slim
+ARG PYTHON_VERSION=3.10.12-slim
 FROM python:${PYTHON_VERSION}
 
 # .pyc 생성을 막고 로그가 버퍼에 쌓이지 않도록 해 컨테이너 로그를 바로 확인한다.

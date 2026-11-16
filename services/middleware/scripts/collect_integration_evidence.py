@@ -246,6 +246,8 @@ async def run_flow(
         filter(None, [str(MIDDLEWARE_ROOT), env.get("PYTHONPATH")])
     )
     env["MIDDLEWARE_DRONES_CONFIG"] = str(selected_config)
+    # This script always speaks stdio; an exported MCP_TRANSPORT=http must not leak in.
+    env["MCP_TRANSPORT"] = "stdio"
     server = StdioServerParameters(
         command=sys.executable, args=["-m", "app.mcp_server"], env=env
     )

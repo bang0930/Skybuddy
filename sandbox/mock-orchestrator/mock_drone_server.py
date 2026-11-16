@@ -16,6 +16,7 @@ propose_mission_plan은 MissionPlan 스키마로 계획을 검증한 뒤,
 airsim.MultirotorClient() 호출로 교체하면 됨.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -482,4 +483,18 @@ def propose_mission_plan(
 
 
 if __name__ == "__main__":
-    mcp.run()
+    # 기본은 stdio(오케스트레이터가 이 파일을 직접 실행해 연결). 서버와 오케스트레이터가
+    # 서로 다른 컴퓨터에 있으면 MCP_TRANSPORT=http로 실행하고 주소(URL)로 접속한다.
+    # 인증이 없으므로 host 기본값은 이 컴퓨터에서만 접속되는 127.0.0.1이다. 같은
+    # 네트워크의 다른 컴퓨터에서 접속하려면 MCP_HOST=0.0.0.0으로 열되, 믿을 수 있는
+    # 네트워크에서만 쓴다.
+    if os.environ.get("MCP_TRANSPORT", "stdio") == "http":
+        # 윈도우 콘솔(cp949 등)에서 배너의 특수문자가 오류를 내지 않도록 배너를 끈다.
+        mcp.run(
+            transport="http",
+            host=os.environ.get("MCP_HOST", "127.0.0.1"),
+            port=int(os.environ.get("MCP_PORT", "9000")),
+            show_banner=False,
+        )
+    else:
+        mcp.run()

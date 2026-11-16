@@ -10,6 +10,13 @@ Completion rules follow the simulation ``DroneInterface`` contract:
 - ``land()``/``disarm()`` return whether the vehicle was confirmed disarmed.
 
 ``DroneInterface`` exposes no protocol ACK, so ``accepted`` is never fabricated.
+
+Lost link: while a ``goto`` leg is polled, ``DispatcherConfig.link_loss_timeout_s`` of
+silence fails it with ``LINK_LOST``. Commands sent during the outage would not reach the
+vehicle, so the middleware does not try to land it then; the vehicle's own failsafe
+(ArduPilot ``FS_GCS_ENABLE``) is expected to act. The dispatcher waits up to
+``link_recovery_timeout_s`` for telemetry; when it returns, the drone flies the task's
+return leg and lands. Either way the task fails and the drone is left ``unavailable``.
 """
 
 import contextlib
@@ -41,6 +48,10 @@ from .config import DispatcherConfig
 from .event_log import EventLog
 from .fake_drone import METERS_PER_DEGREE_LAT
 from .registry import DroneRegistry
+
+LINK_LOST = "LINK_LOST"
+# Below this altitude after a recovered link, the vehicle failsafe already landed it.
+ON_GROUND_ALT_M = 1.0
 
 TERMINAL_STATUSES = {
     CommandStatus.SUCCEEDED,
@@ -168,9 +179,10 @@ class Dispatcher:
         task = execution.task
         airborne = False
         succeeded = True
+        lost_link: CommandTracker | None = None
         for tracker in execution.trackers:
             command_type = tracker.command.payload.command_type.value
-            if command_type == "return_home" or _is_last_goto(execution, tracker):
+            if _is_return_leg(execution, tracker):
                 self.registry.set_status(task.drone_id, DroneStatus.RETURNING)
             ok = self._execute(tracker)
             if command_type == "takeoff" and tracker.history:
@@ -179,13 +191,22 @@ class Dispatcher:
                 airborne = False
             if not ok:
                 succeeded = False
+                if _error_code(tracker) == LINK_LOST:
+                    lost_link = tracker
                 break
 
         if not succeeded:
+            reason = (
+                "the telemetry link was lost"
+                if lost_link is not None
+                else "an earlier command in the task failed"
+            )
             for tracker in execution.trackers:
                 if tracker.status == CommandStatus.PENDING:
-                    tracker.fail("TASK_ABORTED", "an earlier command in the task failed")
-            if airborne:
+                    tracker.fail("TASK_ABORTED", reason)
+            if lost_link is not None:
+                self._recover_lost_link(execution, lost_link)
+            elif airborne:
                 self._emergency_stop(task.drone_id)
 
         execution.state = TaskState.SUCCEEDED if succeeded else TaskState.FAILED
@@ -267,23 +288,23 @@ class Dispatcher:
         *,
         timeout_s: float,
     ) -> bool:
-        handle = self.registry.get(tracker.command.drone_id)
-        deadline = time.monotonic() + timeout_s
-        last_distance = None
-        while time.monotonic() < deadline:
-            with handle.exclusive():
-                sample = handle.client.get_telemetry(timeout=self.telemetry_poll_timeout_s)
-            if sample is None or sample.get("lat") is None or sample.get("lon") is None:
-                continue
+        def mark_executing() -> None:
             if tracker.status == CommandStatus.SENT:
                 tracker.transition(CommandStatus.EXECUTING)
-            last_distance = _distance_m(
-                sample["lat"], sample["lon"], latitude, longitude
-            )
-            if last_distance < self.config.reach_threshold_m:
-                tracker.transition(CommandStatus.SUCCEEDED)
-                return True
-        detail = "no telemetry" if last_distance is None else f"{last_distance:.1f}m away"
+
+        outcome, detail = self._poll_arrival(
+            tracker.command.drone_id,
+            latitude,
+            longitude,
+            timeout_s=timeout_s,
+            on_position=mark_executing,
+        )
+        if outcome == "reached":
+            tracker.transition(CommandStatus.SUCCEEDED)
+            return True
+        if outcome == "link_lost":
+            tracker.fail(LINK_LOST, detail)
+            return False
         tracker.transition(
             CommandStatus.TIMED_OUT,
             CommandError(
@@ -294,8 +315,146 @@ class Dispatcher:
         )
         return False
 
+    def _poll_arrival(
+        self,
+        drone_id: str,
+        latitude: float,
+        longitude: float,
+        *,
+        timeout_s: float,
+        on_position: Callable[[], None] | None = None,
+    ) -> tuple[str, str]:
+        """Poll until within ``reach_threshold_m``: ``reached``, ``timed_out`` or ``link_lost``."""
+        handle = self.registry.get(drone_id)
+        started = time.monotonic()
+        deadline = started + timeout_s
+        last_contact = started
+        last_distance = None
+        while time.monotonic() < deadline:
+            with handle.exclusive():
+                sample = handle.client.get_telemetry(timeout=self.telemetry_poll_timeout_s)
+            now = time.monotonic()
+            if sample is None:
+                silent_s = now - last_contact
+                if silent_s >= self.config.link_loss_timeout_s:
+                    return "link_lost", (
+                        f"no telemetry for {silent_s:.1f}s "
+                        f"(limit {self.config.link_loss_timeout_s:g}s)"
+                    )
+                continue
+            last_contact = now
+            if sample.get("lat") is None or sample.get("lon") is None:
+                continue
+            if on_position is not None:
+                on_position()
+            last_distance = _distance_m(sample["lat"], sample["lon"], latitude, longitude)
+            if last_distance < self.config.reach_threshold_m:
+                return "reached", f"{last_distance:.1f}m away"
+        detail = "no telemetry" if last_distance is None else f"{last_distance:.1f}m away"
+        return "timed_out", detail
+
+    # ------------------------------------------------------------------ lost link
+
+    def _recover_lost_link(self, execution: TaskExecution, lost: CommandTracker) -> None:
+        """Wait for the link; once back, fly the task's return leg and land."""
+        task = execution.task
+        drone_id = task.drone_id
+        handle = self.registry.get(drone_id)
+        ids = {"mission_id": task.mission_id, "task_id": task.task_id, "drone_id": drone_id}
+        # The vehicle failsafe is expected to be bringing it home meanwhile.
+        self.registry.set_status(drone_id, DroneStatus.RETURNING)
+        self.event_log.write(
+            "link_lost",
+            **ids,
+            command_id=lost.command.command_id,
+            wait_s=self.config.link_recovery_timeout_s,
+        )
+
+        sample, outage_s = self._wait_for_link(handle)
+        if sample is None:
+            self.event_log.write("link_not_restored", **ids, waited_s=round(outage_s, 1))
+            return
+        self.event_log.write("link_restored", **ids, outage_s=round(outage_s, 1))
+
+        altitude = sample.get("relative_alt_m")
+        if altitude is not None and altitude < ON_GROUND_ALT_M:
+            self.event_log.write(
+                "link_recovery_finished", **ids, outcome="already_on_ground"
+            )
+            return
+
+        returned = self._fly_return_leg(execution)
+        if returned == "link_lost":
+            # Lost again on the way home: commands would not arrive, leave it to failsafe.
+            self.event_log.write("link_recovery_finished", **ids, outcome="link_lost_again")
+            return
+        landed = self._land_or_disarm(drone_id)
+        self.event_log.write(
+            "link_recovery_finished",
+            **ids,
+            outcome="landed" if landed else "disarmed",
+            return_leg=returned,
+        )
+
+    def _wait_for_link(self, handle) -> tuple[dict | None, float]:
+        """Poll until any telemetry sample arrives or ``link_recovery_timeout_s`` passes."""
+        started = time.monotonic()
+        deadline = started + self.config.link_recovery_timeout_s
+        while time.monotonic() < deadline:
+            with handle.exclusive():
+                sample = handle.client.get_telemetry(timeout=self.telemetry_poll_timeout_s)
+            if sample is not None:
+                return sample, time.monotonic() - started
+        return None, time.monotonic() - started
+
+    def _fly_return_leg(self, execution: TaskExecution) -> str:
+        """Re-issue the task's return command outside its tracker (it was aborted).
+
+        Returns ``reached``, ``timed_out``, ``link_lost``, ``sent`` (return_home has no
+        arrival check here) or ``failed``.
+        """
+        handle = self.registry.get(execution.task.drone_id)
+        leg = next((t for t in execution.trackers if _is_return_leg(execution, t)), None)
+        if leg is None:
+            return "failed"
+        try:
+            request = to_drone_interface_request(
+                leg.command,
+                drone_id=handle.drone_id,
+                protocol=handle.protocol,
+                capabilities=handle.capabilities,
+            )
+            with handle.exclusive():
+                request.invoke(handle.client)
+        except Exception as exc:  # noqa: BLE001 - recovery must still try to land
+            self.event_log.write(
+                "link_recovery_return_failed",
+                drone_id=handle.drone_id,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return "failed"
+        if request.method != InterfaceMethod.GOTO:
+            return "sent"
+        start, _ = handle.latest_sample()
+        distance = None
+        if start and start.get("lat") is not None and start.get("lon") is not None:
+            distance = _distance_m(
+                start["lat"], start["lon"], request.latitude, request.longitude
+            )
+        outcome, _ = self._poll_arrival(
+            handle.drone_id,
+            request.latitude,
+            request.longitude,
+            timeout_s=self.config.leg_timeout_s(distance),
+        )
+        return outcome
+
     def _emergency_stop(self, drone_id: str) -> None:
         """Land first; disarm if landing cannot be confirmed (same policy as run_mission)."""
+        landed = self._land_or_disarm(drone_id)
+        self.event_log.write("emergency_stop", drone_id=drone_id, landed=landed)
+
+    def _land_or_disarm(self, drone_id: str) -> bool:
         handle = self.registry.get(drone_id)
         landed = False
         with contextlib.suppress(Exception), handle.exclusive():
@@ -303,7 +462,7 @@ class Dispatcher:
         if not landed:
             with contextlib.suppress(Exception), handle.exclusive():
                 handle.client.disarm()
-        self.event_log.write("emergency_stop", drone_id=drone_id, landed=landed)
+        return landed
 
     def _logger(
         self, task: MissionTask
@@ -339,6 +498,18 @@ def _is_last_goto(execution: TaskExecution, tracker: CommandTracker) -> bool:
         and index + 1 < len(trackers)
         and trackers[index + 1].command.payload.command_type.value == "land"
     )
+
+
+def _is_return_leg(execution: TaskExecution, tracker: CommandTracker) -> bool:
+    return tracker.command.payload.command_type.value == "return_home" or _is_last_goto(
+        execution, tracker
+    )
+
+
+def _error_code(tracker: CommandTracker) -> str | None:
+    if not tracker.history or tracker.history[-1].error is None:
+        return None
+    return tracker.history[-1].error.code
 
 
 def _distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:

@@ -11,17 +11,22 @@ True가 될 때까지 "실행 -> continue_with_results로 재판단"을 반복�
 무한 루프를 막기 위해 라운드 수를 _MAX_ROUNDS로 제한한다.
 """
 
+import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamable_http_client
 
 from app.providers import get_provider
 
 # repo root: services/orchestrator/app/llm.py -> ../../../
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _MOCK_SERVER_PATH = _REPO_ROOT / "sandbox" / "mock-orchestrator" / "mock_drone_server.py"
-_MOCK_SERVER_PYTHON = _REPO_ROOT / "sandbox" / "mock-orchestrator" / "venv" / "bin" / "python"
+# 가상환경의 python 위치는 운영체제마다 다르다 (윈도우: Scripts/python.exe, 그 외: bin/python).
+_VENV_PYTHON = Path("Scripts", "python.exe") if os.name == "nt" else Path("bin", "python")
+_MOCK_SERVER_PYTHON = _REPO_ROOT / "sandbox" / "mock-orchestrator" / "venv" / _VENV_PYTHON
 
 _server_params = StdioServerParameters(
     command=str(_MOCK_SERVER_PYTHON),
@@ -31,11 +36,27 @@ _server_params = StdioServerParameters(
 _MAX_ROUNDS = 5
 
 
+@asynccontextmanager
+async def _connect():
+    """MCP 서버에 접속해 (read, write) 스트림을 돌려준다.
+
+    MCP_SERVER_URL이 있으면 그 주소로 HTTP 접속하고(서버가 다른 컴퓨터에 있을 때),
+    없으면 이전처럼 서버 프로그램을 직접 실행해 stdio로 접속한다.
+    """
+    url = os.environ.get("MCP_SERVER_URL")
+    if url:
+        async with streamable_http_client(url) as (read, write):
+            yield read, write
+    else:
+        async with stdio_client(_server_params) as (read, write):
+            yield read, write
+
+
 async def run_command(user_message: str) -> dict:
     """자연어 명령을 받아 MCP 서버의 실제 도구를 통해 LLM이 드론을 제어하게 합니다."""
     provider = get_provider()
 
-    async with stdio_client(_server_params) as (read, write):
+    async with _connect() as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             mcp_tools = (await session.list_tools()).tools

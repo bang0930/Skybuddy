@@ -22,7 +22,7 @@ from app.schemas import (
 )
 from app.schemas.mission import ContractModel, Identifier, _require_unique
 
-from .dispatcher import Dispatcher, TaskExecution
+from .dispatcher import TERMINAL_STATUSES, Dispatcher, TaskExecution
 from .event_log import EventLog
 from .planning import build_mission_tasks, validate_plan
 from .registry import DroneRegistry
@@ -180,6 +180,48 @@ class MissionService:
             drones=self.registry.states(),
             tasks=tasks,
         )
+
+    def running_tasks(self) -> list[dict[str, Any]]:
+        """Tasks still flying, with the command each is on, across every mission.
+
+        Used when the server stops: the Dispatcher threads die with the process, so the
+        drones listed here may be left in the air at their last target.
+        """
+        with self._lock:
+            executions = [
+                (mission_id, execution)
+                for mission_id, mission_executions in self._executions.items()
+                for execution in mission_executions
+            ]
+        running = []
+        for mission_id, execution in executions:
+            if execution.state != TaskState.RUNNING:
+                continue
+            report = execution.report()
+            current = next(
+                (
+                    command
+                    for command in report.commands
+                    if command.status not in TERMINAL_STATUSES
+                ),
+                None,
+            )
+            running.append(
+                {
+                    "mission_id": mission_id,
+                    "task_id": report.task_id,
+                    "drone_id": report.drone_id,
+                    "area_id": report.area_id,
+                    "current_command": None
+                    if current is None
+                    else {
+                        "command_id": current.command_id,
+                        "command_type": current.command_type,
+                        "status": current.status.value,
+                    },
+                }
+            )
+        return running
 
     def _scenario(self, mission_id: str) -> MissionScenario:
         try:
