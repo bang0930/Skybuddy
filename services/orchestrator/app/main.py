@@ -1,6 +1,7 @@
 """Entry point for the SkyBuddy orchestrator service."""
 
 import logging
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -8,7 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.llm import run_command
-from app.status import StatusUnavailable, read_status
+from app.status import StatusUnavailable, is_connection_error, read_status
 
 logger = logging.getLogger(__name__)
 
@@ -42,15 +43,33 @@ async def command_endpoint(message: str) -> dict:
     return await run_command(message)
 
 
+# 관제 화면이 3초마다 /status를 부르므로, 미들웨어가 꺼져 있는 동안 같은 경고가 반복되지 않게
+# 끊길 때와 다시 연결될 때 한 번씩만 남긴다.
+_middleware_down = False
+
+
 @app.get("/status", tags=["ui"])
 async def status_endpoint() -> dict:
     """LLM 없이 미들웨어에서 임무·드론·작업 상태를 읽어 옵니다. 관제 화면이 주기적으로 부릅니다."""
+    global _middleware_down
     try:
-        return await read_status()
+        status = await read_status()
     except StatusUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
-    except Exception:
-        logger.exception("status read failed")
+    except Exception as exc:
+        if is_connection_error(exc):
+            if not _middleware_down:
+                logger.warning(
+                    "middleware unreachable at %s; /status returns 503 until it is back",
+                    os.environ.get("MCP_SERVER_URL"),
+                )
+                _middleware_down = True
+        else:
+            logger.exception("status read failed")
         raise HTTPException(
             status_code=503, detail="미들웨어에 연결할 수 없습니다. 미들웨어 서버가 떠 있는지 확인하세요."
         ) from None
+    if _middleware_down:
+        logger.warning("middleware reachable again")
+        _middleware_down = False
+    return status

@@ -21,6 +21,18 @@ class StatusUnavailable(RuntimeError):
     """미들웨어 상태를 조회할 수 없을 때. 메시지는 화면에 그대로 보여 준다."""
 
 
+def is_connection_error(exc: BaseException) -> bool:
+    """미들웨어가 꺼져 있어 접속하지 못한 경우인지.
+
+    MCP 클라이언트는 실패를 예외 그룹으로 감싸 던지므로 안쪽까지 살핀다. httpx 계열 패키지
+    이름이 mcp 버전마다 달라(httpx, httpx2) 클래스 이름으로 판단한다.
+    """
+    inner = getattr(exc, "exceptions", None)
+    if inner:
+        return any(is_connection_error(e) for e in inner)
+    return isinstance(exc, ConnectionError) or type(exc).__name__ in {"ConnectError", "ConnectTimeout"}
+
+
 async def read_status() -> dict:
     """불러온 모든 임무의 상태를 화면에 필요한 항목만 추려 돌려준다."""
     if not os.environ.get("MCP_SERVER_URL"):
