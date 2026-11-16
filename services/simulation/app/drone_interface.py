@@ -19,6 +19,8 @@
 이게 "미들웨어는 프로토콜을 몰라도 된다"는 주장의 실물 증거다.
 """
 import math
+import sys
+import time
 from abc import ABC, abstractmethod
 from typing import Optional, TypedDict
 
@@ -51,6 +53,8 @@ class Telemetry(TypedDict):
     vibration_y: Optional[float]
     vibration_z: Optional[float]
     clipping: Optional[int]                 # 가속도계 포화 횟수. AP_DDS 는 제공하지 않음
+    link_quality_pct: Optional[float]       # 링크 품질 0~100(%). 시뮬레이션은 장애 주입이 채운다.
+                                            # 실기체 어댑터는 아직 None (텔레메트리 라디오 RSSI 등으로 채울 자리)
     timestamp: float                        # Unix epoch. 항상 값이 있다
 
 
@@ -120,6 +124,8 @@ class DroneInterface(ABC):
         timeout 이 None 이면 현재 고도로 정한다 (landing_timeout_s 참고).
         미들웨어는 land() 를 인자 없이 부르므로, 기본값이 고도와 무관한 고정값이면
         높이 떠 있는 기체가 다 내려오기 전에 '착륙 실패'로 판정된다.
+        timeout 이 지나도 아직 내려가는 중이면 더 기다린다 (LandingWait). 고도는 홈 기준이라
+        착륙 지점 지형이 홈보다 낮으면 그만큼 더 내려가야 하기 때문이다.
         """
 
     @abstractmethod
@@ -139,6 +145,16 @@ class DroneInterface(ABC):
     def close(self):
         """연결 정리."""
 
+    def fault_status(self):
+        """장애 주입 상태(dict). 선택 메서드라 주입 기능이 없는 구현은 None 을 돌려준다.
+
+        MavlinkDrone / Ros2Drone 은 fault_injection.FaultInjector.status() 를 돌려준다.
+        블로킹하지 않고 스레드 안전하므로 미들웨어가 DroneHandle.exclusive 없이 불러도 된다.
+        미들웨어는 이 값을 기록용으로 쓰고, 장애 판단은 실제로 받은 데이터
+        (battery_remaining_pct, 샘플 간격, connection_status, WAYPOINT_TIMEOUT)로 하는 것을 권한다.
+        """
+        return None
+
     @staticmethod
     def landing_timeout_s(relative_alt_m):
         """착륙 확인을 기다릴 시간(초). 고도 1m당 4초, 최소 60초.
@@ -154,3 +170,54 @@ class DroneInterface(ABC):
         dlat = (lat2 - lat1) * 111320
         dlon = (lon2 - lon1) * 111320 * math.cos(math.radians(lat1))
         return math.sqrt(dlat ** 2 + dlon ** 2)
+
+
+# land() 가 기본 대기 시간(landing_timeout_s) 뒤에도 기다리는 조건.
+# 대기 시간은 홈 기준 고도로 정하므로, 착륙 지점 지형이 홈보다 낮으면 그 안에 다 내려오지 못한다.
+# 2026-11-09 SITL 실측: 배터리 0% 강제 착륙 지점(호수 쪽, 지형이 홈보다 20m 넘게 낮음)에서 60초 뒤에도
+# 0.3m/s 로 내려가는 중이었고, 미들웨어는 land() 의 False 를 착륙 실패로 보고 공중에서 강제 disarm 했다.
+LANDING_DESCENT_MIN_M_S = 0.15   # 이보다 빨리 내려가고 있으면 '착륙 중'으로 본다
+LANDING_DESCENT_GRACE_S = 5.0    # 하강이 잠깐 멈춰도 이 시간은 더 기다린다
+LANDING_EXTEND_MAX_S = 300.0     # 기본 대기 시간을 넘겨 더 기다리는 최대 시간
+
+
+class LandingWait:
+    """land() 의 대기 판단. 기본 시간이 지나도 아직 내려가고 있으면 계속 기다린다.
+
+        wait = LandingWait(timeout)
+        while wait.waiting():
+            wait.observe(self.get_telemetry(timeout=1))    # 샘플의 vz 로 하강 여부를 본다
+            if 시동이 꺼졌으면:
+                return True
+        return False
+
+    내려가지도 않고 시동도 안 꺼지면 기본 시간에 끝난다 (그다음 조치는 호출 측 정책).
+    통신이 끊겨 샘플이 없으면 하강을 확인할 수 없으므로 더 기다리지 않는다.
+    """
+
+    def __init__(self, timeout, clock=time.time):
+        self.clock = clock
+        self.deadline = clock() + float(timeout)
+        self.hard_deadline = self.deadline + LANDING_EXTEND_MAX_S
+        self.last_descent_at = None
+        self.extended = False
+
+    def observe(self, sample):
+        vz = sample.get("vz") if sample else None
+        if vz is not None and vz > LANDING_DESCENT_MIN_M_S:
+            self.last_descent_at = self.clock()
+
+    def waiting(self):
+        now = self.clock()
+        if now < self.deadline:
+            return True
+        if now >= self.hard_deadline or self.last_descent_at is None:
+            return False
+        if now - self.last_descent_at > LANDING_DESCENT_GRACE_S:
+            return False
+        if not self.extended:
+            self.extended = True
+            # 미들웨어가 stdout 을 MCP 통신에 쓸 수 있으므로 stderr 로 쓴다.
+            print("[착륙] 기본 대기 시간이 지났지만 아직 내려가는 중이라 계속 기다린다 "
+                  "(착륙 지점이 홈보다 낮을 수 있다)", file=sys.stderr, flush=True)
+        return True

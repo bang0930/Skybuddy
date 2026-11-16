@@ -1,0 +1,22 @@
+{
+  "telemetry_timeout_s": 3.0,
+  "waypoints": {
+    "generator": "coverage"
+  },
+  "drones": [
+    {
+      "drone_id": "drone-01",
+      "protocol": "mavlink",
+      "mode": "real",
+      "connection_string": "udpin:127.0.0.1:14561",
+      "swath_width_m": 60
+    },
+    {
+      "drone_id": "drone-02",
+      "protocol": "ap_dds",
+      "mode": "real",
+      "connection_string": "ros2:ap",
+      "swath_width_m": 60
+    }
+  ]
+}

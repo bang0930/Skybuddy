@@ -19,6 +19,8 @@ kpi_mission.py 의 미션 로직은 어느 쪽이 붙었는지 알 필요가 없
  3) 위치 명령만으로는 이륙하지 않는다. GUIDED 위치제어 루프가 매 주기
     is_disarmed_or_landed() 를 먼저 검사해서, 착륙 상태면 지상 대기 처리로 빠진다.
     반드시 /ap/experimental/takeoff 서비스를 써야 한다.
+
+장애 주입(fault_injection.py)이 붙어 있다. fault.py 로 장애를 걸지 않으면 동작은 그대로다.
 """
 import math
 import re
@@ -37,10 +39,12 @@ from geometry_msgs.msg import TwistStamped
 from sensor_msgs.msg import BatteryState, NavSatFix
 from std_srvs.srv import Trigger
 
-from drone_interface import DroneInterface
+from drone_interface import DroneInterface, LandingWait
+from fault_injection import FaultInjector
 
 # ArduCopter 비행 모드 번호
 COPTER_MODE_GUIDED = 4
+COPTER_MODE_RTL = 6
 COPTER_MODE_LAND = 9
 
 # ardupilot_msgs/msg/GlobalPosition
@@ -113,6 +117,9 @@ class Ros2Drone(DroneInterface):
         self._target = None          # 재발행할 현재 목표
         self._last_telemetry_at = 0.0
 
+        self.faults = FaultInjector([connection_string, f"ros2:{self.ns}"], drone_id=drone_id)
+        self.faults.set_failsafe_handler(self._fault_failsafe)
+
     # ---------------------------------------------------------------- 연결
 
     def connect(self, timeout=30):
@@ -172,6 +179,7 @@ class Ros2Drone(DroneInterface):
         self._home_alt_amsl = self._geopose.pose.position.altitude
         print(f"[연결됨] ROS 2 namespace=/{self.ns} "
               f"home_alt_amsl={self._home_alt_amsl:.2f}m")
+        self.faults.note_connected()
         return self
 
     def close(self):
@@ -194,26 +202,46 @@ class Ros2Drone(DroneInterface):
             self._rclpy_held = False
             _release_rclpy()
 
+    def fault_status(self):
+        """장애 주입 상태 (fault_injection.FaultInjector.status). 블로킹 없음, 스레드 안전."""
+        return self.faults.status()
+
     # ------------------------------------------------------------ 콜백들
+    # 장애 주입 통신 두절(down) 중에는 받은 메시지를 버린다. 실제로 끊겼을 때처럼
+    # 상태 캐시가 마지막 값에 멈춘다. 위치와 시동 상태만은 버리기 전에 장애 주입기에 알린다
+    # (range 모드의 복구 판단, 비행 중에만 닳는 배터리).
 
     def _on_geopose(self, msg):
+        pos = msg.pose.position
+        self.faults.observe_position(pos.latitude, pos.longitude)
+        if self.faults.link_down():
+            return
         with self._lock:
             self._geopose = msg
             self._geopose_seq += 1
 
     def _on_twist(self, msg):
+        if self.faults.link_down():
+            return
         with self._lock:
             self._twist = msg
 
     def _on_navsat(self, msg):
+        if self.faults.link_down():
+            return
         with self._lock:
             self._navsat = msg
 
     def _on_battery(self, msg):
+        if self.faults.link_down():
+            return
         with self._lock:
             self._battery = msg
 
     def _on_status(self, msg):
+        self.faults.observe_armed(getattr(msg, "armed", None))
+        if self.faults.link_down():
+            return
         with self._lock:
             self._status = msg
 
@@ -222,6 +250,12 @@ class Ros2Drone(DroneInterface):
     def _call(self, client, request, timeout=10, what="service"):
         """executor 가 별도 스레드에서 돌고 있으므로 future 를 폴링해서 기다린다.
         여기서 spin_until_future_complete 를 쓰면 executor 와 충돌한다."""
+        if self.faults.link_down():
+            # 장애 주입 통신 두절: 요청이 기체에 닿지 않는다.
+            # 실제로 끊겼을 때처럼 timeout 만큼 기다린 뒤 시간 초과로 끝낸다.
+            self.faults.count_tx_drop()
+            self.faults.sleep(timeout)
+            raise RuntimeError(f"{what} 응답 시간 초과 (장애 주입: 통신 두절)")
         if not client.wait_for_service(timeout_sec=timeout):
             raise RuntimeError(f"{what} 서비스를 찾을 수 없음 ({client.srv_name})")
         future = client.call_async(request)
@@ -242,9 +276,29 @@ class Ros2Drone(DroneInterface):
         with self._lock:
             return bool(self._status.armed) if self._status is not None else None
 
+    def _fault_failsafe(self, mode):
+        """장애 주입: 기체 안에서 일어날 모드 전환(통신 두절 failsafe, 배터리 0% 착륙)을 흉내 낸다.
+
+        MavlinkDrone._fault_failsafe 참고.
+
+        토픽 콜백(executor 스레드)에서 불릴 수 있으므로 서비스 응답을 기다리지 않는다.
+        기다리면 응답을 처리할 executor 가 바로 그 대기에 묶여 멈춘다.
+        """
+        client = getattr(self, "_cli_mode", None)
+        if client is None:
+            raise RuntimeError("연결 전이라 모드를 바꿀 수 없음")
+        req = ModeSwitch.Request()
+        req.mode = COPTER_MODE_RTL if mode == "rtl" else COPTER_MODE_LAND
+        client.call_async(req)
+        self._target = None         # GUIDED 목표 재발행을 멈춘다 (RTL/LAND 에서는 어차피 무시됨)
+
     # ------------------------------------------------------------ 비행 명령
 
     def takeoff(self, altitude_m):
+        # 장애 주입으로 배터리가 0% 면 시동 단계에서 거부된 것처럼 바로 실패한다.
+        blocked = self.faults.takeoff_block()
+        if blocked:
+            raise RuntimeError(blocked)
         # prearm 은 실패해도 진행한다 - 이유를 로그로 남기는 게 목적이다.
         try:
             pre = self._call(self._cli_prearm, Trigger.Request(), what="prearm_check")
@@ -285,11 +339,15 @@ class Ros2Drone(DroneInterface):
                 continue
             last_alt = t["relative_alt_m"]
             if last_alt >= altitude_m * 0.95:
+                self.faults.note_takeoff()
                 return
         raise RuntimeError(
             f"이륙 후 고도 도달 실패 (목표 {altitude_m}m, 최종 {last_alt}m)")
 
     def goto(self, lat, lon, alt_m):
+        # 장애 주입 stall: 기체에 보내지 않는다. 재발행도 이전 목표 그대로라 기체는 그 자리에 머문다.
+        if self.faults.drop_goto(lat, lon, alt_m):
+            return
         msg = GlobalPosition()
         msg.header.frame_id = MAP_FRAME     # 이거 빠지면 조용히 무시된다
         msg.coordinate_frame = FRAME_GLOBAL_REL_ALT
@@ -298,10 +356,15 @@ class Ros2Drone(DroneInterface):
         msg.longitude = float(lon)
         msg.altitude = float(alt_m)
         self._target = msg
-        self._cmd_pub.publish(msg)          # 타이머를 기다리지 않고 즉시 한 번
+        # 통신 두절 중에는 기체에 닿지 않는다. 목표는 기억해 두므로 복구되면
+        # 재발행 타이머가 다시 보낸다 (MavlinkDrone 은 한 번만 보내서 복구 후에도 사라진다).
+        if self.faults.link_down():
+            self.faults.count_tx_drop()
+        else:
+            self._cmd_pub.publish(msg)      # 타이머를 기다리지 않고 즉시 한 번
 
     def _republish_target(self):
-        if self._target is not None:
+        if self._target is not None and not self.faults.link_down():
             self._target.header.stamp = self.node.get_clock().now().to_msg()
             self._cmd_pub.publish(self._target)
 
@@ -316,11 +379,14 @@ class Ros2Drone(DroneInterface):
             timeout = self.landing_timeout_s(alt)
         if not self._set_mode(COPTER_MODE_LAND):
             return False
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+        # timeout 이 지나도 아직 내려가는 중이면 더 기다린다 (LandingWait, MavlinkDrone.land 참고).
+        wait = LandingWait(timeout)
+        while wait.waiting():
             if self._armed() is False:
                 return True
-            time.sleep(0.5)
+            # 기다리는 동안에도 위치를 읽는다. 안 읽으면 미들웨어가 착륙 중을 'disconnected' 로
+            # 잘못 본다 (K1, 실측 약 35초. MavlinkDrone.land 참고).
+            wait.observe(self.get_telemetry(timeout=0.5))
         return False
 
     def disarm(self, timeout=5):
@@ -341,6 +407,10 @@ class Ros2Drone(DroneInterface):
     # ------------------------------------------------------------ 텔레메트리
 
     def get_telemetry(self, timeout=2):
+        # 장애 주입: 통신 degraded 면 샘플을 드물게 준다 (down 이면 콜백이 메시지를 버려 None).
+        ready, timeout = self.faults.telemetry_gate(timeout)
+        if not ready:
+            return None
         # 새 위치 메시지가 올 때까지 기다린다. 논블로킹으로 두면 호출 측 while 루프가
         # CPU 를 전부 먹고 CSV 행이 수십만 개로 불어난다.
         with self._lock:
@@ -397,7 +467,8 @@ class Ros2Drone(DroneInterface):
             gps_fix_type = None
             eph = None
 
-        return {
+        # deliver() 가 배터리 잔량·전압과 링크 품질(장애 주입)을 채우고, 미들웨어에 넘기는 샘플을 기록한다.
+        return self.faults.deliver({
             "lat": pos.latitude,
             "lon": pos.longitude,
             "relative_alt_m": round(rel_alt, 3),
@@ -416,8 +487,10 @@ class Ros2Drone(DroneInterface):
             "vibration_y": None,
             "vibration_z": None,
             "clipping": None,
+            # AP_DDS 에는 링크 품질 토픽이 없다. 시뮬레이션에서는 장애 주입이 채운다.
+            "link_quality_pct": None,
             "timestamp": time.time(),
-        }
+        })
 
 
 if __name__ == "__main__":

@@ -20,11 +20,14 @@ DroneInterface 계약(drone_interface.py)의 MAVLink 구현체다.
 연결 문자열은 pymavlink 형식을 그대로 쓴다.
     udpin:127.0.0.1:14561    이 프로세스가 수신 대기 (SITL이 보내오는 쪽)
     udpout:127.0.0.1:14550   이 프로세스가 송신
+
+장애 주입(fault_injection.py)이 붙어 있다. fault.py 로 장애를 걸지 않으면 동작은 그대로다.
 """
 from pymavlink import mavutil
 import time
 
-from drone_interface import DroneInterface
+from drone_interface import DroneInterface, LandingWait
+from fault_injection import FaultInjector
 
 
 class MavlinkDrone(DroneInterface):
@@ -39,10 +42,15 @@ class MavlinkDrone(DroneInterface):
     실기체로 옮길 때는 반드시 꺼야 한다.
     """
 
-    def __init__(self, connection_string, force_arm=True):
+    def __init__(self, connection_string, force_arm=True, drone_id=None):
         self.connection_string = connection_string
         self.force_arm = force_arm
         self.master = None
+        # 미들웨어(ClientFactory)는 drone_id 를 넘기지 않는다. 그래서 장애 주입 대상은
+        # 연결 문자열로도 찾을 수 있게 둘 다 등록한다.
+        self.drone_id = drone_id
+        self.faults = FaultInjector([connection_string], drone_id=drone_id)
+        self.faults.set_failsafe_handler(self._fault_failsafe)
 
     # ---------------------------------------------------------------- 연결
 
@@ -53,17 +61,25 @@ class MavlinkDrone(DroneInterface):
         하트비트를 한 번 받아봐야 알 수 있다. 그래서 연결 = 하트비트 대기다.
         """
         self.master = mavutil.mavlink_connection(self.connection_string)
+        # 수신·송신 함수를 감싸 통신 장애를 적용한다. 하트비트 대기보다 먼저 해야
+        # 두절 상태에서 연결하면 실제처럼 실패한다.
+        self.faults.attach_mavlink(self.master)
         msg = self.master.wait_heartbeat(timeout=timeout)
         if msg is None:
             raise RuntimeError("하트비트 수신 실패")
         self.master.target_system = msg.get_srcSystem()
         self.master.target_component = msg.get_srcComponent()
         print(f"[연결됨] system={self.master.target_system} component={self.master.target_component}")
+        self.faults.note_connected()
         return self
 
     def close(self):
         if self.master:
             self.master.close()
+
+    def fault_status(self):
+        """장애 주입 상태 (fault_injection.FaultInjector.status). 블로킹 없음, 스레드 안전."""
+        return self.faults.status()
 
     # -------------------------------------------------------- 내부 헬퍼
 
@@ -122,6 +138,28 @@ class MavlinkDrone(DroneInterface):
             if hb is not None and hb.custom_mode == mode_id:
                 return True
         return False
+
+    def _fault_failsafe(self, mode):
+        """장애 주입: 기체 안에서 일어날 모드 전환을 흉내 낸다.
+
+        - 통신 두절 failsafe(FS_GCS_ENABLE): 실제 기체는 지상국 하트비트가 FS_GCS_TIMEOUT 동안 끊기면
+          비행 컨트롤러가 스스로 RTL(또는 LAND)한다. 장애 주입은 지상(어댑터) 쪽에서만 링크를 끊으므로
+          SITL 은 끊긴 줄 모른다.
+        - 배터리 0%: 기체가 더 날 수 없으므로 그 자리 착륙(LAND).
+        어느 쪽이든 링크와 무관한 기체 내부의 일이므로 두절 차단을 우회한다(bypass).
+        응답은 두절 중이면 볼 수 없으므로 기다리지 않는다.
+        """
+        name = "RTL" if mode == "rtl" else "LAND"
+        mode_id = (self.master.mode_mapping() or {}).get(name)
+        if mode_id is None:
+            raise RuntimeError(f"{name} 모드 번호를 알 수 없음")
+        with self.faults.bypass():
+            for _ in range(2):          # UDP 한 번 유실에 대비해 두 번 보낸다
+                self.master.mav.set_mode_send(
+                    self.master.target_system,
+                    mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                    mode_id
+                )
 
     def arm(self):
         """모터 시동. 성공하면 True, 실패하면 이유를 출력하고 False.
@@ -185,7 +223,12 @@ class MavlinkDrone(DroneInterface):
            명령이 수락된 시점에 반환하면 아직 지상 근처에 있는 기체에 호출 측이
            goto() 를 보내게 되어, 프로토콜마다 takeoff() 의 의미가 달라진다.
            Ros2Drone 과 동일하게 목표 고도의 95% 도달을 완료 기준으로 쓴다.
+
+        장애 주입으로 배터리가 0% 면 시동 단계에서 거부된 것처럼 바로 실패한다.
         """
+        blocked = self.faults.takeoff_block()
+        if blocked:
+            raise RuntimeError(blocked)
         self.set_mode('STABILIZE')
         if not self.arm():
             raise RuntimeError("ARM 실패")
@@ -233,6 +276,7 @@ class MavlinkDrone(DroneInterface):
                 continue
             last_alt = t["relative_alt_m"]
             if last_alt >= altitude_m * 0.95:
+                self.faults.note_takeoff()
                 return
         raise RuntimeError(
             f"이륙 후 고도 도달 실패 (목표 {altitude_m}m, 최종 {last_alt}m)")
@@ -246,7 +290,12 @@ class MavlinkDrone(DroneInterface):
         alt_m은 홈(이륙 지점) 기준 상대 고도다. 해수면 기준이 아니다.
         type_mask 0b0000111111111000은 "속도·가속도·yaw는 무시하고 위치만 쓴다"는 뜻이다
         (하위 3비트 = 위경도·고도 사용, 나머지 비트 = 해당 항목 무시).
+
+        장애 주입 stall 이 걸려 있으면 보내지 않는다. 기체는 이전 목표에 머문다.
+        통신 두절(down) 중에는 보내도 기체에 닿지 않는다 (한 번만 보내므로 복구 후에도 사라진 채로 남는다).
         """
+        if self.faults.drop_goto(lat, lon, alt_m):
+            return
         self.master.mav.set_position_target_global_int_send(
             0,
             self.master.target_system, self.master.target_component,
@@ -265,6 +314,14 @@ class MavlinkDrone(DroneInterface):
         시작해서 엉뚱하게 실패한다. 그래서 하트비트의 armed 플래그가 내려가는 것까지 확인한다.
 
         timeout 이 None 이면 지금 고도로 정한다 (DroneInterface.landing_timeout_s).
+
+        기다리는 동안에도 get_telemetry() 로 위치를 계속 읽는다. 미들웨어는 어댑터가 읽은 샘플로
+        연결 상태를 판단하므로, 안 읽으면 착륙하는 수십 초 동안 'disconnected' 로 잘못 보인다
+        (K1, 2026-11-09 SITL 실측: MAVLink 약 55초). 시동 여부는 그 읽기(_drain)에서 함께 갱신되는
+        최신 하트비트로 판단한다.
+
+        timeout 이 지나도 아직 내려가는 중(vz)이면 더 기다린다 (LandingWait, 최대 300초 더).
+        착륙 지점 지형이 홈보다 낮으면 홈 기준 고도로 정한 시간 안에 다 내려오지 못한다.
         """
         self._drain()
         if timeout is None:
@@ -276,13 +333,11 @@ class MavlinkDrone(DroneInterface):
             mavutil.mavlink.MAV_CMD_NAV_LAND, 0,
             0, 0, 0, 0, 0, 0, 0
         )
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            hb = self.master.recv_match(type='HEARTBEAT', blocking=True, timeout=2)
-            if hb is None:
-                continue
-            armed = bool(hb.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
-            if not armed:
+        wait = LandingWait(timeout)
+        while wait.waiting():
+            wait.observe(self.get_telemetry(timeout=1))
+            hb = self.master.messages.get('HEARTBEAT')
+            if hb is not None and not (hb.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED):
                 return True
         return False
 
@@ -324,7 +379,13 @@ class MavlinkDrone(DroneInterface):
         값이 없는 필드는 None 이다(빈 문자열 아님). 필드 자체는 항상 존재한다.
         CSV 로 쓸 때만 빈 칸이 되며, 그 변환은 drone_interface.telemetry_to_csv_row()
         가 담당한다.
+
+        장애 주입: 통신 degraded 면 샘플을 드물게 준다. deliver() 가 배터리 잔량·전압과
+        링크 품질(link_quality_pct)을 채우고, 미들웨어에 넘기는 샘플을 기록한다.
         """
+        ready, timeout = self.faults.telemetry_gate(timeout)
+        if not ready:
+            return None
         # 쌓인 메시지를 먼저 비워야 '지금' 위치를 받는다. 비우지 않으면 오래 쉬었다가
         # 불렸을 때 쉬기 시작한 시점의 위치가 나온다 (_drain 참고).
         # 비운 뒤에는 새로 도착하는 다음 위치 메시지를 기다리므로 약 4Hz 간격은 그대로다.
@@ -340,7 +401,7 @@ class MavlinkDrone(DroneInterface):
         # AP_DDS에는 이에 해당하는 토픽이 없어서 DDS 드론은 이 필드가 빈 값으로 나온다.
         vib = self.master.messages.get('VIBRATION')
 
-        return {
+        return self.faults.deliver({
             "lat": msg.lat / 1e7,
             "lon": msg.lon / 1e7,
             "relative_alt_m": msg.relative_alt / 1000.0,
@@ -359,5 +420,7 @@ class MavlinkDrone(DroneInterface):
             "vibration_y": round(vib.vibration_y, 3) if vib else None,
             "vibration_z": round(vib.vibration_z, 3) if vib else None,
             "clipping": (vib.clipping_0 + vib.clipping_1 + vib.clipping_2) if vib else None,
+            # 실기체라면 텔레메트리 라디오의 RADIO_STATUS 로 채울 수 있다. 시뮬레이션에서는 장애 주입이 채운다.
+            "link_quality_pct": None,
             "timestamp": time.time(),
-        }
+        })

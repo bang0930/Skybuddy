@@ -30,7 +30,8 @@ AP_DDS(ROS 2)로 제어**하면서 각각 탐색 임무를 수행시키고 KPI�
 
 ```
 app/
-  drone_interface.py     프로토콜 공통 계약 (메서드 7개 + 텔레메트리 17필드)
+  drone_interface.py     프로토콜 공통 계약 (메서드 7개 + 텔레메트리 18필드)
+  fault_injection.py     장애 주입 (배터리·통신·웨이포인트 미도달). 두 어댑터가 공통으로 씀
   mavlink_drone.py       MAVLink 어댑터 (pymavlink)
   ros2_drone.py          AP_DDS 어댑터 (rclpy)
   kpi_mission.py         드론 1대의 임무 + KPI 수집
@@ -38,10 +39,22 @@ app/
 tests/
   test_adapters.py       계약 준수 정적 검증 (시뮬레이터 없이 실행 가능)
   test_mission_policy.py 실패 처리 정책 검증 - 가짜 드론 사용 (시뮬레이터 없이 실행 가능)
+  test_faults.py         장애 주입 → 미들웨어 DroneState 까지 검증 (시뮬레이터 없이 실행 가능)
 scripts/
   start_hetero_sim.sh    이기종 2대 환경 기동
   tune_damping.py        자세 루프 감쇠 튜닝
   session_check.py       연결 한 번으로 임무 두 번 (상주 운용 점검, 실제 SITL 필요)
+  fault.py               장애 걸기·풀기, 미들웨어에 넘긴 텔레메트리 보기 (fault.py stream)
+  map_probe.py           맵 장애물 높이 측정·섹터 그리기 (AirSim 실행 중 필요)
+  fault_live_check.py    실제 SITL 연결에서 장애 주입 확인 (비행 없음, 명령 안 보냄)
+  make_sections.py       2x2 탐색 섹터 정의·안전 검사 -> 임무 파일
+  run_plan.py            LLM 없이 임무 계획 제출 (리허설)
+  scenario_check.sh      시나리오 한 번에 돌리기 (sections / battery / link / faults)
+  track_drones.py        AirSim 화면에 드론 위치를 색으로 표시 (영상용)
+scenarios/
+  README.md              섹터 정의, 시나리오별 장애 걸기, AirSim 화면 표시
+  missions/              mission-101 (산악맵 2x2 섹터), mission-001 (미들웨어 원본 사본)
+  drones.sitl.json       SITL 2대용 미들웨어 드론 설정 (지그재그 coverage, 촬영 폭 60m)
 config/
   airsim_2vehicle.json   AirSim 2기체 설정
   dds_drone.parm         DDS 드론 시동 파라미터
@@ -70,6 +83,7 @@ pymavlink나 ROS 2가 설치돼 있지 않아도 됩니다. `test_adapters.py`�
 ```bash
 python3 tests/test_adapters.py
 python3 tests/test_mission_policy.py
+python3 tests/test_faults.py      # pymavlink 필요. ROS 2·미들웨어 코드가 없으면 그 부분만 건너뜀
 ```
 
 `test_adapters.py`가 확인하는 것: 두 어댑터의 메서드·시그니처 일치, 텔레메트리 스키마와
@@ -130,10 +144,27 @@ run_mission(connection_string='ros2:ap', drone_id='drone2', protocol='ros2',
 > 동작하지 않습니다. 기체 타입이 `ArduCopter`라 AirSim은 물리·렌더링만 담당합니다.
 > 교체 지점은 `DroneInterface`입니다. 이유는 `INTERFACE.md` 2-8 참고.
 
+## 장애 주입 (11주차)
+
+SITL은 배터리가 항상 100%이고 통신도 끊기지 않으므로, 장애는 어댑터 안에서 만듭니다.
+값은 텔레메트리 샘플마다(약 4Hz) 이어서 바뀌고 미들웨어가 받는 경로 그대로 들어갑니다.
+미들웨어 서버를 띄운 채 다른 터미널에서 겁니다. 값과 규칙은 `INTERFACE.md` 2-9에 있습니다.
+
+```bash
+python3 scripts/fault.py battery drone-01 0 --drain 120   # 비행 중에만 줄어 120초에 0% (0%면 강제 착륙)
+python3 scripts/fault.py link drone-02 range --degraded-m 250 --down-m 330
+                                                          # 거리에 따라 링크 품질 100→0, 악화 → 두절
+python3 scripts/fault.py link drone-01 down --for 15      # 15초 통신 두절
+python3 scripts/fault.py stall drone-01                   # 다음 goto 1번 무시 → WAYPOINT_TIMEOUT
+python3 scripts/fault.py stream --every 4                 # 미들웨어에 넘긴 텔레메트리 (배터리·링크 품질)
+python3 scripts/fault.py status
+python3 scripts/fault.py clear
+```
+
 ## 다음 작업
 
 - `return_home()` 추가 (#24 의존 항목. 미들웨어는 그전까지 goto(home)으로 대체)
 - 정식 FakeDrone (#24 의존 항목)
-- 배터리·GPS 저하 값 주입 기능 (장애 시나리오 검증용)
+- GPS 저하 값 주입
 - 탐색 구역 커버리지 지표 구현
 - 두 기체의 펌웨어 버전과 튜닝을 통일해 성능 비교 재측정

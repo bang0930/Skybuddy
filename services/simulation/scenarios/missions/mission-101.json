@@ -1,0 +1,98 @@
+{
+  "mission_id": "mission-101",
+  "instruction": "홈(이륙 지점) 북동쪽 열린 지대를 2x2 섹터로 나눴다. 이름은 sector-행-열이며 행 0은 홈에 가까운 남쪽 줄, 1은 먼 북쪽 줄, 열 0은 서쪽, 1은 동쪽이다. 홈에서 섹터 중심까지 거리와 탐색 고도는 sector-0-0 약 159m·고도 30m, sector-0-1 약 263m·고도 40m, sector-1-0 약 263m·고도 50m, sector-1-1 약 336m·고도 60m 이다. 섹터마다 탐색 고도가 달라 두 드론의 비행 고도가 겹치지 않는다. 배정된 섹터는 미들웨어가 지그재그로 수색한 뒤 홈으로 돌아와 착륙한다. 드론 상태(배터리, 통신 연결)를 보고 드론마다 섹터를 하나씩 배정해 줘.",
+  "search_areas": [
+    {
+      "area_id": "sector-0-0",
+      "boundary": [
+        {
+          "latitude": -35.3628118,
+          "longitude": 149.1657808
+        },
+        {
+          "latitude": -35.3628118,
+          "longitude": 149.1671577
+        },
+        {
+          "latitude": -35.361689,
+          "longitude": 149.1671577
+        },
+        {
+          "latitude": -35.361689,
+          "longitude": 149.1657808
+        }
+      ],
+      "search_altitude_m": 30,
+      "search_altitude_reference": "home_relative"
+    },
+    {
+      "area_id": "sector-0-1",
+      "boundary": [
+        {
+          "latitude": -35.3628118,
+          "longitude": 149.1671577
+        },
+        {
+          "latitude": -35.3628118,
+          "longitude": 149.1685346
+        },
+        {
+          "latitude": -35.361689,
+          "longitude": 149.1685346
+        },
+        {
+          "latitude": -35.361689,
+          "longitude": 149.1671577
+        }
+      ],
+      "search_altitude_m": 40,
+      "search_altitude_reference": "home_relative"
+    },
+    {
+      "area_id": "sector-1-0",
+      "boundary": [
+        {
+          "latitude": -35.361689,
+          "longitude": 149.1657808
+        },
+        {
+          "latitude": -35.361689,
+          "longitude": 149.1671577
+        },
+        {
+          "latitude": -35.3605661,
+          "longitude": 149.1671577
+        },
+        {
+          "latitude": -35.3605661,
+          "longitude": 149.1657808
+        }
+      ],
+      "search_altitude_m": 50,
+      "search_altitude_reference": "home_relative"
+    },
+    {
+      "area_id": "sector-1-1",
+      "boundary": [
+        {
+          "latitude": -35.361689,
+          "longitude": 149.1671577
+        },
+        {
+          "latitude": -35.361689,
+          "longitude": 149.1685346
+        },
+        {
+          "latitude": -35.3605661,
+          "longitude": 149.1685346
+        },
+        {
+          "latitude": -35.3605661,
+          "longitude": 149.1671577
+        }
+      ],
+      "search_altitude_m": 60,
+      "search_altitude_reference": "home_relative"
+    }
+  ]
+}
