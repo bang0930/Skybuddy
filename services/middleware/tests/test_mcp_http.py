@@ -234,6 +234,7 @@ def test_mission_continues_after_the_client_disconnects(http_server) -> None:
     assert tools == {
         "list_missions",
         "get_mission_context",
+        "split_search_area",
         "submit_mission_plan",
         "get_mission_status",
     }

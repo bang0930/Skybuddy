@@ -1,4 +1,4 @@
-"""Mission service: the state behind the three MCP tools."""
+"""Mission service: the state behind the MCP tools."""
 
 import json
 import threading
@@ -22,11 +22,13 @@ from app.schemas import (
 )
 from app.schemas.mission import ContractModel, Identifier, _require_unique
 
+from .area_split import AreaSplitError, split_area
+from .coverage import _to_geo
 from .dispatcher import TERMINAL_STATUSES, Dispatcher, TaskExecution
 from .event_log import EventLog
 from .planning import build_mission_tasks, validate_plan
 from .registry import DroneRegistry
-from .waypoints import CoverageGenerator, WaypointGenerator
+from .waypoints import CoverageGenerator, WaypointGenerator, _local_polygon
 
 
 class MissionScenario(ContractModel):
@@ -169,6 +171,50 @@ class MissionService:
                 tasks=accepted,
             )
 
+    def split_area(self, mission_id: str, area_id: str, n_pieces: int) -> dict[str, Any]:
+        """Replace ``area_id`` with ``n_pieces`` equal-area sub-areas in the mission.
+
+        The parent is removed so that one plan cannot assign it together with one of its
+        pieces, which would search the same ground twice. The change lives in memory only:
+        a restart reloads the scenario files.
+        """
+        scenario = self._scenario(mission_id)
+        with self._lock:
+            try:
+                pieces = self._split_pieces(mission_id, scenario, area_id, n_pieces)
+            except AreaSplitError as exc:
+                issue = ValidationIssue(code=exc.code, message=str(exc), location="area_id")
+                self.event_log.write(
+                    "area_split_rejected",
+                    mission_id=mission_id,
+                    area_id=area_id,
+                    n_pieces=n_pieces,
+                    errors=[issue],
+                )
+                return {
+                    "mission_id": mission_id,
+                    "status": "rejected",
+                    "errors": [issue.model_dump(mode="json")],
+                }
+            areas = scenario.search_areas
+            index = next(i for i, area in enumerate(areas) if area.area_id == area_id)
+            scenario.search_areas = [*areas[:index], *pieces, *areas[index + 1 :]]
+            self.event_log.write(
+                "area_split",
+                mission_id=mission_id,
+                base_area_id=area_id,
+                area_ids=[piece.area_id for piece in pieces],
+            )
+        return {
+            "mission_id": mission_id,
+            "status": "split",
+            "base_area_id": area_id,
+            "areas": [
+                {"area_id": piece.area_id, "center": _center(piece).model_dump(mode="json")}
+                for piece in pieces
+            ],
+        }
+
     def mission_status(self, mission_id: str) -> MissionStatusReport:
         self._scenario(mission_id)
         with self._lock:
@@ -231,6 +277,30 @@ class MissionService:
                 f"unknown mission_id {mission_id!r}; loaded: {sorted(self.scenarios)}"
             ) from None
 
+    def _split_pieces(
+        self, mission_id: str, scenario: "MissionScenario", area_id: str, n_pieces: int
+    ) -> list[SearchArea]:
+        """Validate a split request and cut the area; raises ``AreaSplitError``."""
+        areas = {area.area_id: area for area in scenario.search_areas}
+        if area_id not in areas:
+            raise AreaSplitError(
+                "UNKNOWN_AREA", f"unknown area_id {area_id!r}; use one of {sorted(areas)}"
+            )
+        if any(
+            execution.area_id == area_id and execution.state == TaskState.RUNNING
+            for execution in self._executions.get(mission_id, [])
+        ):
+            raise AreaSplitError(
+                "AREA_IN_USE", f"{area_id} has a running task; split it after the task ends"
+            )
+        pieces = split_area(areas[area_id], n_pieces)
+        taken = [piece.area_id for piece in pieces if piece.area_id in areas]
+        if taken:
+            raise AreaSplitError(
+                "AREA_ID_TAKEN", f"{', '.join(taken)} already exist in {mission_id}"
+            )
+        return pieces
+
     def _reject(
         self, mission_id: str, attempt: int, issues: list[ValidationIssue]
     ) -> PlanSubmissionResult:
@@ -253,3 +323,10 @@ def _mission_state(states: list[TaskState]) -> MissionState:
     if any(state == TaskState.FAILED for state in states):
         return MissionState.FAILED
     return MissionState.SUCCEEDED
+
+
+def _center(area: SearchArea):
+    """Centroid of the area, so the LLM can tell where each piece lies."""
+    polygon, ref_lat, ref_lon = _local_polygon(area)
+    point = polygon.centroid
+    return _to_geo(point.x, point.y, ref_lat, ref_lon)
