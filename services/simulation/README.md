@@ -41,23 +41,31 @@ tests/
   test_mission_policy.py 실패 처리 정책 검증 - 가짜 드론 사용 (시뮬레이터 없이 실행 가능)
   test_faults.py         장애 주입 → 미들웨어 DroneState 까지 검증 (시뮬레이터 없이 실행 가능)
 scripts/
-  start_hetero_sim.sh    이기종 2대 환경 기동
+  start_hetero_sim.sh    이기종 2대 환경 기동 (두 기체 비행 속도 맞춤 포함)
   tune_damping.py        자세 루프 감쇠 튜닝
+  apply_params.py        파라미터 파일을 MAVLink 로 넣고 확인 (drone1 비행 속도)
+  speed_check.py         비행 기록으로 두 드론 실제 속도 비교 (같은 길이 구간 시간·유지 속도, 다르면 고칠 값 안내)
+  mission_check.py       자연어 명령·정상 운용·장애 시나리오 3개의 결과 판정 (미들웨어 이벤트 기록), --report 로 검증 현황
   session_check.py       연결 한 번으로 임무 두 번 (상주 운용 점검, 실제 SITL 필요)
   fault.py               장애 걸기·풀기, 미들웨어에 넘긴 텔레메트리 보기 (fault.py stream)
   map_probe.py           맵 장애물 높이 측정·섹터 그리기 (AirSim 실행 중 필요)
   fault_live_check.py    실제 SITL 연결에서 장애 주입 확인 (비행 없음, 명령 안 보냄)
   make_sections.py       2x2 탐색 섹터 정의·안전 검사 -> 임무 파일
-  run_plan.py            LLM 없이 임무 계획 제출 (리허설)
-  scenario_check.sh      시나리오 한 번에 돌리기 (sections / battery / link / faults)
-  track_drones.py        AirSim 화면에 드론 위치를 색으로 표시 (영상용)
+  run_plan.py            LLM 없이 임무 계획 제출 (리허설, demo --no-llm)
+  track_drones.py        AirSim 화면에 드론이 지나간 길을 색으로 표시, 작은 창 배치·촬영 카메라 짐벌 (layout)
+  minimap.py             섹터·드론 위치 미니맵 (브라우저, AirSim 위에 작은 창으로 띄움. 영상용)
+  run_live.sh            한 번에 띄우기 (미들웨어 + LLM 오케스트레이터 + AirSim 표시 + 미니맵),
+                         say 로 자연어 명령, demo normal|link|battery|timeout 로 정상 운용·장애 시나리오 3개
 scenarios/
-  README.md              섹터 정의, 시나리오별 장애 걸기, AirSim 화면 표시
-  missions/              mission-101 (산악맵 2x2 섹터), mission-001 (미들웨어 원본 사본)
-  drones.sitl.json       SITL 2대용 미들웨어 드론 설정 (지그재그 coverage, 촬영 폭 60m)
+  README.md              섹터 정의, 정상 운용·장애 시나리오 3개, AirSim 화면 표시
+  missions/              mission-101 (산악맵 2x2 섹터. 정상 운용·장애 시나리오 3개 모두 이 임무)
+  drones.sitl.json       SITL 2대용 미들웨어 드론 설정 (지그재그 coverage, 촬영 폭 60m, 한 줄 125m 를 한 번에)
 config/
-  airsim_2vehicle.json   AirSim 2기체 설정
-  dds_drone.parm         DDS 드론 시동 파라미터
+  airsim_2vehicle.json   AirSim 2기체 설정 (작은 창 1=drone-01, 2=drone-02 촬영 카메라, 3=숨김. 짐벌로 흔들림 없음)
+  dds_drone.parm         DDS 드론(4.7.1) 부팅 파라미터 (시동 검사 생략, 비행 속도 WP_SPD·WP_ACC·LAND_SPD_MS,
+                         기수 고정 WP_YAW_BEHAVIOR 0)
+  mavlink_drone.parm     MAVLink 드론(4.3) 비행 속도 (WPNAV_*·LAND_SPEED. 4.3 은 실제 속도가 설정의 약 0.555 배라
+                         drone2 와 실제 속도가 같게 맞춘 값, INTERFACE.md 3-2), 기수 고정 WP_YAW_BEHAVIOR 0
 samples/                 실제 실행 결과 예시 CSV
 docs/
   engineering-notes.md   환경 구축 절차와 알려진 함정
@@ -151,18 +159,81 @@ SITL은 배터리가 항상 100%이고 통신도 끊기지 않으므로, 장애�
 미들웨어 서버를 띄운 채 다른 터미널에서 겁니다. 값과 규칙은 `INTERFACE.md` 2-9에 있습니다.
 
 ```bash
-python3 scripts/fault.py battery drone-01 0 --drain 120   # 비행 중에만 줄어 120초에 0% (0%면 강제 착륙)
 python3 scripts/fault.py link drone-02 range --degraded-m 250 --down-m 330
-                                                          # 거리에 따라 링크 품질 100→0, 악화 → 두절
-python3 scripts/fault.py link drone-01 down --for 15      # 15초 통신 두절
-python3 scripts/fault.py stall drone-01                   # 다음 goto 1번 무시 → WAYPOINT_TIMEOUT
+                                                          # 거리에 따라 링크 품질 100→0, 악화 → 두절 → 기체 RTL
+python3 scripts/fault.py battery drone-01 0 --from 40 --drain 140 --rtl-at 20
+                                                          # 40% 에서 비행 중 줄다가 20% 에서 기체 배터리 failsafe RTL
+python3 scripts/fault.py stall drone-02 --after-takeoff 20 # 다음 goto 1번 무시 → WAYPOINT_TIMEOUT
 python3 scripts/fault.py stream --every 4                 # 미들웨어에 넘긴 텔레메트리 (배터리·링크 품질)
 python3 scripts/fault.py status
 python3 scripts/fault.py clear
 ```
 
+## 정상 운용 + 장애 시나리오 3개 (11/9 회의)
+
+넷 다 **같은 임무(mission-101)·같은 섹터(남·북)·같은 미니맵·같은 첫 명령**으로 돕니다(시뮬 → LLM → 시뮬).
+첫 명령: "남쪽과 북쪽 섹터를 드론 두 대로 하나씩 맡아 수색해 줘. 어느 드론이 어느 섹터를 맡을지는 드론 상태를 보고
+정해 줘." LLM 은 mission-101 설명의 규칙(배터리 적은 드론에 가까운 섹터, 비슷하면 drone-01 남·drone-02 북)으로 정합니다.
+
+| # | 시나리오 | 흐름 | 명령 |
+|---|---|---|---|
+| 0 | 정상 운용 (기준) | 장애 없음 → drone-01 남·drone-02 북 끝까지 수색(이동 7/7) → 둘 다 홈 착륙. 통신 두절·미도달·비상 정지 없음 | `run_live.sh demo normal` |
+| 1 | 통신 두절 | 북으로 간 drone-02 링크가 250m 부터 악화, 330m 에서 두절 → 기체 귀환(RTL) → 미들웨어 `LINK_LOST` → 복구 → 귀환·착륙. drone-01 은 성공 | `run_live.sh demo link` |
+| 2 | 배터리 부족 | drone-01 40%·drone-02 100% → LLM 이 drone-01 에 가까운 남 → 비행 중 20% 에서 기체 귀환 → 미들웨어가 timeout 처럼 처리(`WAYPOINT_TIMEOUT` → 귀환 → 홈 착륙) → "못 끝낸 섹터 다시" → drone-02 가 남 수색 | `run_live.sh demo battery` |
+| 3 | 웨이포인트 미도달 | drone-02 가 북 섹터 입구에서 웨이포인트를 못 받음 → 60초 뒤 `WAYPOINT_TIMEOUT` → 귀환 → 홈 착륙 → "못 끝낸 섹터 다시" → drone-01 이 북 수색 | `run_live.sh demo timeout` |
+
+```bash
+bash scripts/run_live.sh                  # 터미널 1: 미들웨어 + LLM + 미니맵 (LLM 키 입력)
+bash scripts/run_live.sh demo link        # 터미널 2: 장애 걸기 → 명령 → 끝까지 따라가며 판정 (LLM 없이: 뒤에 --no-llm)
+python3 scripts/mission_check.py --report # 4개가 지금 설정으로 검증됐는지, 안 됐으면 무엇을 돌릴지
+```
+
+장애 드론의 작업 실패는 정상이라, 대신 장애가 실제로 걸렸는지 → 미들웨어가 알아채 멈췄는지 → 장애 드론이 홈으로
+돌아와 내렸는지 → 다른 드론은 성공했는지 → (2·3) 재배정이 성공했는지를 봅니다. 장애 드론은 `unavailable` 로
+남으므로 장애 시나리오마다 AirSim·SITL·`run_live.sh` 를 다시 켭니다 (`demo` 가 먼저 확인합니다). 정상 운용은 실패한
+드론이 없어서 끝나고 바로 장애 시나리오 하나를 이어서 할 수 있습니다 (시연: 정상 → 장애).
+
+**미들웨어 변경 (이 PR 에 함께)**: `services/middleware/app/runtime/dispatcher.py` 에서 `WAYPOINT_TIMEOUT` 이고
+텔레메트리가 들어오면(기체와 통신은 되는데 그 구간을 못 간 경우) 그 자리에 내리지 않고 작업의 귀환 구간(`goto(home)`)을
+보낸 뒤 착륙합니다(`timeout_return_finished` 기록). 시나리오 2·3 의 "return 시키고" 부분입니다. 텔레메트리가 없거나
+귀환 구간 자체가 시간 초과면 예전처럼 그 자리 비상 착륙입니다. 시험: `services/middleware/tests/test_timeout_return.py`.
+함께 고친 두 가지(main 에서도 실패하던 시험 3개):
+- `fake_drone.py`: 텔레메트리에 `link_quality_pct`(100) 추가 — #43 에서 스키마가 18필드가 된 뒤 `test_fake_drone_contract` 실패
+- `mcp_server.py`: Python 3.10(ROS 2 Humble)에서 Ctrl+C 가 `KeyboardInterrupt` 가 아니라 `CancelledError` 로 올라와
+  traceback 과 종료 코드 1 → 같이 잡아 0 으로 끝냄 (`test_mcp_http` ctrl_c 시험 2개. Windows 에서는 건너뛰는 시험)
+
+아직 안 하는 것: 실패한 섹터 자동 재배정(지금은 사용자가 LLM 에 "못 끝낸 섹터 다시"라고 말함).
+
+## 시연 화면 (11주차)
+
+```bash
+python3 scripts/track_drones.py layout       # 한 번만: AirSim 작은 창 1=drone-01, 2=drone-02 촬영 카메라 (AirSim 재시작)
+bash scripts/start_hetero_sim.sh             # SITL 2대 (두 기체 실제 속도 수평 10 m/s 로 맞춤)
+bash scripts/run_live.sh                     # 미들웨어 + LLM + 섹터 선 + 지나간 길 + 미니맵 (--no-llm 이면 LLM 없이)
+bash scripts/run_live.sh check               # 다른 터미널: 비행 없이 오케스트레이터·미들웨어·LLM 도구 호출 점검
+bash scripts/run_live.sh say "북쪽과 남쪽 섹터를 드론 두 대로 하나씩 맡아 수색해 줘"
+                                             # 자연어 명령 -> 계획 수락 -> 이륙·이동·착륙까지 따라가며 '판정: 통과/실패'
+python3 scripts/speed_check.py               # 비행 뒤: 두 드론 실제 속도 비교
+```
+
+두 기체 모두 기수 방향을 고정합니다(`WP_YAW_BEHAVIOR 0`). 기본값(다음 목표를 바라봄)에서는 drone1(4.3)의 앞 카메라가
+비행 중 좌우로 반복해 돌았습니다. AirSim 화면 끊김을 줄이려고 `track_drones.py`(0.5초·5m 마다)와 `minimap.py`(1초에 3번)의
+AirSim API 호출도 줄였습니다.
+
+`say` 는 LLM 답을 받은 뒤 `mission_check.py` 로 미들웨어 이벤트 기록을 끝까지 따라가 판정합니다 (계획 거부 이유,
+명령별 실패 코드, 작업 결과). 섹터는 동서남북으로 말해도 됩니다 (mission-101 설명에 sector-0-0 남, 0-1 동, 1-0 서,
+1-1 북이 적혀 있어 LLM 이 같은 이름을 씁니다).
+
+화면 아래 줄은 왼쪽부터 drone-01 카메라(초록 테두리), drone-02 카메라(연노랑), 미니맵입니다. AirSim 작은 창은
+자리와 테두리 색이 AirSim 안에 고정돼 있어(1 왼쪽 초록, 2 가운데 연노랑, 3 오른쪽 보라) 드론 색을 그 테두리 색에
+맞췄습니다(지나간 길·미니맵 핀). 섹터 선은 북 빨강·남 파랑·동 주황·서 하늘입니다(미니맵도 같은 색).
+
+미니맵(`scripts/minimap.py`)은 섹터(서·북·남·동)·지그재그 경로·드론 위치와 고도·배터리·링크를 보여 주고,
+Windows에서는 화면 오른쪽 아래(숨긴 작은 창 3 자리)에 항상 위로 저절로 붙습니다. 자세한 것은 `scenarios/README.md`.
+
 ## 다음 작업
 
+- 실패한 섹터 자동 재배정 (지금은 사용자가 LLM 에 "못 끝낸 섹터 다시"라고 말함)
 - `return_home()` 추가 (#24 의존 항목. 미들웨어는 그전까지 goto(home)으로 대체)
 - 정식 FakeDrone (#24 의존 항목)
 - GPS 저하 값 주입

@@ -341,6 +341,35 @@ def section_signals():
           status["empty"] and status["forced_landing_sent"] is True and status["drain_s"] == 100.0,
           json.dumps(status, ensure_ascii=False))
 
+    # 장애 시나리오 2: 배터리 부족 드론이 비행 중 기준 이하가 되면 기체 배터리 failsafe 로 귀환(RTL)
+    # 텔레메트리 기록은 남기지 않는다 (아래 기록 점검이 drone-01 의 마지막 줄 = 위 0% 시험 값을 본다)
+    low = FaultInjector([MAV_CS], clock=clk, sleep=clk.sleep, poll_s=0, stream_log="")
+    low_modes = []
+    low.set_failsafe_handler(low_modes.append)
+    low.observe_position(*HOME)
+    low.observe_armed(False)
+    save_control({"entries": [entry("battery", {"pct": 0.0, "from_pct": 40.0, "drain_s": 140.0, "rtl_pct": 20.0},
+                                    created=clk.t, eid="low-01")]})
+
+    def low_sample():
+        return low.deliver({"battery_remaining_pct": 100.0, "battery_voltage_v": 12.6,
+                            "link_quality_pct": None})["battery_remaining_pct"]
+
+    check("배터리 부족 --from 40: 이륙 전부터 40% (LLM 이 계획 때 보는 값)", low_sample() == 40.0)
+    low.observe_armed(True)
+    seen = []
+    for _ in range(16):                                   # 비행 80초 (5초마다)
+        clk.t += 5.0
+        seen.append(low_sample())
+    check("40% 에서 비행 70초에 20% -> 기체 배터리 failsafe 귀환(RTL)을 한 번만 보냄 (0% 강제 착륙 없음)",
+          low_modes == ["rtl"] and seen[13] == 20.0 and seen[-1] > 0, str((low_modes, seen)))
+    sent = [e for e in events("fault_battery_low") if e.get("entry_id") == "low-01"]
+    check("배터리 부족 귀환이 기록됨 (sent, 잔량, 홈 거리)",
+          len(sent) == 1 and sent[0].get("sent") is True and sent[0].get("pct") == 20.0
+          and sent[0].get("home_distance_m") is not None, str(sent))
+    check("fault_status(): 귀환 기준 20%, 귀환 보냄",
+          low.status()["battery"]["rtl_pct"] == 20.0 and low.status()["battery"]["low_return_sent"] is True)
+
     dds = injector(clk, identities=("ros2:ap",), drone_id="drone-02")
     dds.observe_position(*HOME)                           # 처음 관측한 위치가 링크 기준점(홈)
     t = dds.deliver({"battery_remaining_pct": 80.0, "battery_voltage_v": 12.6, "link_quality_pct": None})

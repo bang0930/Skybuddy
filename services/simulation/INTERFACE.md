@@ -214,6 +214,10 @@ Pydantic 모델로 바로 옮기기 어렵습니다. 그래서 어댑터 반환�
 | `link_quality_pct` | float | 링크 품질 0~100(%) | △ | △ |
 | `timestamp` | float | Unix epoch | O | O |
 
+AP_DDS의 `gps_fix_type`·`gps_eph`는 `/ap/navsat`에서 옵니다. 4.7.1에서 토픽 이름이 `/ap/navsat/navsat0` →
+`/ap/navsat`로 바뀌어(ArduPilot Copter-4.7.1 `AP_DDS_Topic_Table.h`) 2026-11-16까지는 늘 `None`이었습니다.
+지금은 두 이름을 다 구독합니다. 배터리(`/ap/battery`)는 위치보다 늦게 오는 일이 있어 연결 때 최대 5초 기다립니다.
+
 **X 표시는 구현 부족이 아니라 프로토콜 간 실제 기능 격차입니다.**
 AP_DDS에는 해당 토픽이 존재하지 않습니다. 미들웨어는 이 필드들을 필수로 가정하면 안 됩니다.
 
@@ -376,12 +380,13 @@ SITL은 배터리가 비행 내내 100%이고 통신도 끊기지 않습니다. 
 
 | 장애 | 거는 법 (`scripts/fault.py`) | 샘플마다 바뀌는 값 | 미들웨어에 보이는 것 |
 |---|---|---|---|
+| 배터리 부족 → 귀환 (장애 시나리오 2) | `battery drone-01 0 --from 40 --drain 140 --rtl-at 20` | 40%에서 시작해 **비행 중에만** 줄어듦. 20% 이하가 되면 기체 배터리 failsafe 귀환(RTL) 한 번 | `DroneState.battery_percent`, `battery_voltage_v`. 기체가 목표로 안 가 `WAYPOINT_TIMEOUT` → 귀환 구간·착륙 |
 | 배터리 소진 | `battery drone-01 0 --drain 120` | `battery_remaining_pct`·`battery_voltage_v`가 **비행 중에만** 줄어듦. 0%면 그 자리 강제 착륙 | `DroneState.battery_percent`, `battery_voltage_v` |
 | 배터리 부족(고정) | `battery drone-02 25` | 위 두 값이 25%와 그에 맞는 전압 | 같음 |
 | 통신 거리 | `link drone-02 range --degraded-m 250 --down-m 330` | `link_quality_pct`가 거리에 따라 100→0. 250m부터 샘플 2초에 1개, 330m부터 샘플·명령 끊김. 돌아오면 회복 | 링크 품질(매퍼에 추가 필요, 2-9-2). `observed_at` 지연 → `disconnected` |
 | 통신 악화(시간) | `link drone-01 degraded` | 샘플을 2초에 1개만, `link_quality_pct` 20. 명령은 정상 전달 | `observed_at`이 최대 2초 늦음. `connected` 유지 |
 | 통신 두절(시간) | `link drone-01 down --for 15` | 샘플 없음. 명령·모드 전환·ACK 모두 기체에 안 닿음. 5초 뒤 기체 failsafe(RTL)를 흉내 냄 | 3초 뒤 `disconnected`. goto 중 5초 무응답이면 `LINK_LOST`(#42) → 복구 대기 → 복구되면 귀환·착륙 |
-| 웨이포인트 미도달 | `stall drone-01` (다음 goto 1회 무시) | `goto()`를 기체에 보내지 않음. 위치가 목표 쪽으로 움직이지 않음 | `WAYPOINT_TIMEOUT` |
+| 웨이포인트 미도달 (장애 시나리오 3) | `stall drone-02 --after-takeoff 20` (다음 goto 1회 무시) | `goto()`를 기체에 보내지 않음. 위치가 목표 쪽으로 움직이지 않음 | `WAYPOINT_TIMEOUT` → 텔레메트리가 살아 있으므로 귀환 구간·착륙(`timeout_return_finished`) |
 
 시작 시점은 공통 옵션으로 정합니다: `--after 초`(지금부터), `--after-takeoff 초`(다음 이륙 완료부터),
 `--for 초`(지속 시간). 같은 드론에 같은 종류를 다시 걸면 이전 설정을 대체하고, `fault.py clear`로 해제합니다.
@@ -400,10 +405,19 @@ SITL은 배터리가 비행 내내 100%이고 통신도 끊기지 않습니다. 
 
 - **0%가 되면 기체는 더 날 수 없습니다.** 시뮬레이션에서는 그 자리 착륙(LAND)으로 흉내 내고(실제라면 추락·불시착),
   이후 `goto()`는 기체에 보내지 않고 `takeoff()`는 시동 거부로 실패합니다.
-- **0% 전에 기체가 스스로 돌아오지는 않습니다.** ArduPilot 배터리 failsafe 기본값(`BATT_FS_LOW_ACT`,
-  `BATT_FS_CRT_ACT` = 0)이 "경고만"이라서입니다. **값을 보고 귀환시키는 것이 미들웨어·LLM의 몫입니다.**
+- **`--rtl-at P`를 주면 P% 이하에서 기체가 스스로 돌아옵니다.** ArduPilot 배터리 failsafe를 `BATT_FS_LOW_ACT=2`(RTL)로
+  설정한 기체와 같게, 어댑터가 기체 대신 RTL로 모드를 바꿉니다(통신 두절 failsafe와 같은 방식, 아래). 한 번만 보냅니다.
+  `--rtl-at`이 없으면 0% 전에는 아무것도 하지 않습니다. ArduPilot 기본값(`BATT_FS_LOW_ACT`, `BATT_FS_CRT_ACT` = 0)이
+  "경고만"이라서입니다.
+- **미들웨어에는 "기체가 목표로 안 간다"로 보입니다.** RTL 중에는 GUIDED 목표가 무시되므로 진행 중이던 goto가
+  `WAYPOINT_TIMEOUT`이 되고, 미들웨어(`dispatcher.py`)가 귀환 구간을 보낸 뒤 착륙시킵니다(`timeout_return_finished`).
+  회의의 "배터리 부족은 timeout 처럼 처리"가 이 흐름입니다.
 
-`scenario_check.sh battery`는 drone-01에 sector-0-0(30m)을 맡기고 `battery drone-01 0 --drain 120`을 겁니다.
+**장애 시나리오 2** (`run_live.sh demo battery`): drone-01에 `battery drone-01 0 --from 40 --drain 140 --rtl-at 20`을
+계획 전에 겁니다. LLM은 40% drone-01에 가까운 남(sector-0-0), 100% drone-02에 먼 북(sector-1-1)을 줍니다(mission-101
+설명의 규칙). 0.29%/초로 줄어 비행 70초쯤 20%(남 섹터 두 번째 줄)에서 귀환하고, 홈에 내릴 때 약 8%가 남습니다.
+그다음 "못 끝낸 섹터 다시" 명령으로 drone-02가 남을 맡습니다. 아래 표는 그 전 방식(`--drain 120`, 0%에서 그 자리 강제
+착륙, 수평 약 3~5 m/s)의 결과입니다.
 **2026-11-09 SITL 결과** (계획 수락 후 시간, 미들웨어 `get_mission_status`의 `battery_percent`로 확인):
 
 | 시각 | 잔량 | 위치 |
@@ -447,8 +461,11 @@ drone-01이 섹터 끝에서 돌아오려면 (31 + 59)초 × 0.83 ≈ 75%가 필
 미들웨어 매퍼(`TelemetryStateMapper`)는 모르는 키를 무시하므로 지금은 `DroneState`에 안 들어갑니다.
 LLM에 보여 주려면 `DroneState`에 필드를 하나 두고 `optional_float(telemetry, "link_quality_pct")`로 옮기면 됩니다.
 
-**2026-11-09 SITL 결과** (`scenario_check.sh link`: drone-02 → sector-1-1, `range --degraded-m 250 --down-m 330`,
-계획 수락 후 시간)
+**장애 시나리오 1** (`run_live.sh demo link`): 지상국에서 멀수록 나빠지는 환경으로 두 드론 모두에 `range --degraded-m 250
+--down-m 330`을 겁니다. 북(sector-1-1, 홈에서 최대 약 420m)으로 간 드론만 330m를 넘고, 남(최대 약 230m)의 드론은 영향이
+없습니다. 아래 표는 같은 설정을 drone-02 하나에만 걸었던 2026-11-09 결과입니다.
+
+**2026-11-09 SITL 결과** (drone-02 → sector-1-1, `range --degraded-m 250 --down-m 330`, 계획 수락 후 시간)
 
 | 시각 | 홈 거리 | 링크 품질 | 일어난 일 |
 |---|---|---|---|
@@ -495,7 +512,7 @@ LLM에 보여 주려면 `DroneState`에 필드를 하나 두고 `optional_float(
 
 - **미들웨어에 넘긴 텔레메트리 전부**: `~/skybuddy/logs/telemetry-stream.jsonl` (`SKYBUDDY_TELEMETRY_LOG`로 변경,
   `0`이면 끔). `get_telemetry()`가 돌려준 샘플마다 한 줄입니다. 미들웨어 판단 로직을 SITL 없이 개발할 때
-  이 파일을 그대로 입력으로 쓰면 됩니다. `scenario_check.sh`는 시나리오마다 `telemetry_<시험>.jsonl`·`.csv`로 남깁니다.
+  이 파일을 그대로 입력으로 쓰면 됩니다. `run_live.sh`는 실행마다 `logs/live_<시각>/telemetry.jsonl`로 남깁니다.
 
   ```json
   {"logged_at": "...", "drone": "drone-01",
@@ -617,10 +634,40 @@ drone_id + 웨이포인트 목록 [(위도, 경도), ...] + 순항 고도
 | 드론 수 | 2대 | drone1(MAVLink), drone2(AP_DDS) |
 | 출발 위치 간격 | 6m | 두 기체 스폰 간격 |
 | 수직 분리 | 현재 20m (30m / 50m) | **측정값 아님.** 아래 참고 |
-| 이동 속도 | 약 2.7~4.8 m/s | 기체별로 다름 (아래 참고) |
+| 이동 속도 | **수평 10 m/s, 가감속 약 1.3 m/s², 상승 4·하강 3·착륙 마지막 1.0 m/s (두 기체 실제 속도 같게)** | 2026-11-17부터 (오전 수평 8 m/s·착륙 0.5 m/s → 오후 올림). 그 전에는 기체별로 달랐다 (아래 참고) |
 | 도달 판정 반경 | 3m | 이보다 촘촘한 웨이포인트는 무의미 |
 | 웨이포인트 타임아웃 | 60초 | 초과 시 실패 처리 |
 | **최소 안전 고도** | **30m 이상** | 저고도(10~20m)는 지형지물 충돌 발생 |
+
+**비행 속도 (2026-11-17)**: drone2(4.7.1)가 기본값(airsim-quadX.parm `WP_SPD 20`, `WP_ACC 4`)으로 drone1보다
+훨씬 빨리 날고, 가감속 때 크게 기울어 카메라가 위아래로 흔들렸습니다. 두 기체의 **실제** 속도를 맞췄습니다.
+
+같은 값을 넣어도 같이 날지 않습니다. 비행 기록(2026-11-09·16·17)으로 보면 **drone1(4.3)은 AirSim과 같이 돌 때
+제어기 시간이 실제의 약 0.555배로 흐릅니다**: 실제 속도 = 설정 × 0.555 (`WPNAV_SPEED 600` → 3.33 m/s,
+`WPNAV_SPEED_DN 300` → 1.6 m/s, `LAND_SPEED 50` → 0.28 m/s), 실제 가속 = 설정 × 0.31 (`WPNAV_ACCEL 100` →
+0.33 m/s², 감속은 그 절반). drone2(4.7.1)는 설정값 그대로 납니다(`WP_SPD 6` → 6.0 m/s). 그래서 drone1 값은
+목표 ÷ 0.555 입니다. ArduPilot 4.7에서 이름과 단위가 바뀌어 파일이 둘입니다.
+
+| 기체 | 파일 | 값 | 적용 |
+|---|---|---|---|
+| drone1 (4.3) | `config/mavlink_drone.parm` | `WPNAV_SPEED 1800`, `WPNAV_ACCEL 500`, `WPNAV_SPEED_UP 720`, `WPNAV_SPEED_DN 540`, `LAND_SPEED 180` (cm/s, cm/s²) | `start_hetero_sim.sh` 7단계 `apply_params.py` (eeprom 이 남는 기체라 MAVLink 로 넣고 읽어서 확인, 바뀐 값은 `(전 …)` 표시) |
+| drone2 (4.7.1) | `config/dds_drone.parm` | `WP_SPD 10.0` (m/s), `WP_ACC 1.3` (m/s²), `LAND_SPD_MS 1.0` (m/s, 4.3 의 `LAND_SPEED`). 상승·하강은 airsim-quadX.parm 기본 `WP_SPD_UP 4`, `WP_SPD_DN 3` | `--add-param-file` (부팅마다 eeprom 초기화) |
+
+가감속은 올리지 않았습니다. drone1 의 `WPNAV_ACCEL` 은 `ANGLE_MAX` 30도가 허용하는 566 cm/s² 에 거의 닿아 있어
+(500) 더 올리면 drone1 만 기울기 한계에 걸립니다. 그래서 섹터 안 짧은 구간(62.5m)은 속도를 올려도 거의 그대로라,
+대신 지그재그 한 줄(125m)을 가운데서 끊지 않고 한 번에 날게 했습니다(`scenarios/drones.sitl.json` 의
+`waypoints.max_leg_m 130`, 섹터당 멈춤 8번 → 5번). 미들웨어는 `max_leg_m` 이 `waypoint_timeout_s × min_ground_speed_m_s`
+를 넘으면 서버를 띄우지 않으므로 `dispatcher.min_ground_speed_m_s` 를 2.0 → 2.5 로 같이 올렸습니다.
+
+**기수 방향 고정 (2026-11-17)**: 두 기체 모두 `WP_YAW_BEHAVIOR 0`(기수를 바꾸지 않음)입니다. 기본값 2(다음 목표를 바라봄)는
+GUIDED에서 기수를 목표·속도 방향에 계속 맞추는데, drone1(4.3)은 제어기 시간이 늘어져 수평 경로가 조금씩 좌우로 흔들리고
+기수도 따라 흔들려 앞 카메라 화면이 좌우로 반복해 돌았습니다(수평 10 m/s). 고정하면 이륙 때 방향 그대로 날아 화면이
+돌지 않고, 두 카메라 창이 같은 방향을 봅니다. 같은 때 AirSim 화면 끊김을 줄이려고 `track_drones.py`(0.5초·5m마다)와
+`minimap.py`(1초에 3번)의 AirSim API 호출을 줄였습니다.
+
+확인: 비행 뒤 `python3 speed_check.py` 가 두 드론의 같은 길이 구간 시간·유지 속도를 비교하고, 다르면 drone1
+값을 얼마로 고칠지 알려 줍니다. 미들웨어 구간 제한 시간은 `max(60초, 거리 / 2.5 m/s)`라 여유가 큽니다.
+아래 3-3 기준선(구간 시간 등)은 이 변경 전 측정값입니다.
 
 > ⚠️ **가장 중요**: 두 드론에게 겹치는 구역을 같은 고도로 배정하면 충돌합니다.
 > **구역을 나누거나 고도를 나누거나, 둘 중 하나는 반드시** 해야 합니다.

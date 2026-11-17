@@ -24,6 +24,7 @@ kpi_mission.py 의 미션 로직은 어느 쪽이 붙었는지 알 필요가 없
 """
 import math
 import re
+import sys
 import threading
 import time
 
@@ -62,6 +63,11 @@ TARGET_REPUBLISH_HZ = 2.0
 # (b) SITL 2개 + AirSim + Agent + ROS 2 로 이미 빠듯한 CPU 를 더 먹는다.
 # 그래서 MAVLink 쪽에 맞춰 샘플링한다. 원본 주기가 빠르다는 건 README 에 기록해뒀다.
 DEFAULT_TELEMETRY_INTERVAL_S = 0.25
+
+# 연결 직후 배터리(/ap/battery)를 기다리는 최대 시간. 위치(geopose)보다 늦게 오는 일이 있어서,
+# 위치만 기다리고 바로 읽으면 미들웨어가 처음 받는 텔레메트리의 배터리가 비어 있다
+# (2026-11-16 run_live.sh: drone-02 연결 직후 샘플 battery_remaining_pct=null, 비행 중 샘플은 100).
+BATTERY_WAIT_S = 5.0
 
 _rclpy_lock = threading.Lock()
 _rclpy_users = 0
@@ -141,8 +147,11 @@ class Ros2Drone(DroneInterface):
                                       self._on_geopose, qos)
         self.node.create_subscription(TwistStamped, f"/{n}/twist/filtered",
                                       self._on_twist, qos)
-        self.node.create_subscription(NavSatFix, f"/{n}/navsat/navsat0",
-                                      self._on_navsat, qos)
+        # GPS 토픽 이름이 버전마다 다르다: 4.7.1 은 /ap/navsat (AP_DDS_Topic_Table.h, Copter-4.7.1),
+        # 그 전 버전은 /ap/navsat/navsat0. 둘 다 구독해 두면 있는 쪽에서 받는다 (2026-11-16 기록에서
+        # /ap/navsat/navsat0 만 구독해 drone-02 의 gps_fix_type·gps_eph 가 늘 비어 있었다).
+        for topic in (f"/{n}/navsat", f"/{n}/navsat/navsat0"):
+            self.node.create_subscription(NavSatFix, topic, self._on_navsat, qos)
         self.node.create_subscription(BatteryState, f"/{n}/battery",
                                       self._on_battery, qos)
         self.node.create_subscription(Status, f"/{n}/status",
@@ -172,6 +181,14 @@ class Ros2Drone(DroneInterface):
             self.close()
             raise RuntimeError(f"{timeout}초 안에 /{n}/geopose/filtered 수신 실패 "
                                f"(Agent 와 SITL 이 떠 있는지 확인할 것)")
+
+        # 배터리도 잠깐 기다린다 (BATTERY_WAIT_S). 안 와도 연결은 계속한다 (값이 None 으로 나갈 뿐).
+        battery_deadline = time.time() + BATTERY_WAIT_S
+        while self._battery is None and time.time() < battery_deadline:
+            time.sleep(0.1)
+        if self._battery is None:
+            print(f"[알림] /{n}/battery 를 {BATTERY_WAIT_S:g}초 안에 못 받음 - 배터리 값은 받는 대로 채운다",
+                  file=sys.stderr)   # 미들웨어가 stdout 을 MCP 통신에 쓸 수 있다
 
         # 지금 AMSL 을 일단 홈 고도로 잡는다. DDS geopose 는 AMSL 이고 MAVLink
         # relative_alt 는 홈 기준 상대고도라, 이 기준점이 없으면 두 드론의 고도를

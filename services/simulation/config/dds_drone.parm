@@ -1,5 +1,6 @@
 # DDS 드론(ArduCopter 4.7.1) 전용 추가 파라미터.
 # sim_vehicle.py --add-param-file=~/skybuddy/config_reference/dds_drone.parm 로 적용한다.
+# 이 인스턴스는 부팅마다 eeprom 을 지우므로(start_hetero_sim.sh) 여기 값이 매번 그대로 들어간다.
 #
 # 왜 필요한가:
 #   AirSim 의 시뮬레이션 GPS 는 ArduPilot 의 prearm 검사를 통과하지 못한다.
@@ -12,3 +13,20 @@
 #   -1 은 전 비트 = 모든 검사 생략. 4.5 의 ARMING_CHECK 0 과 같은 효과다.
 #   시뮬레이션 전용이며 실기체에서는 절대 이렇게 두면 안 된다.
 ARMING_SKIPCHK  -1
+
+# 비행 속도: 수평 10 m/s, 가감속 1.3 m/s^2, 착륙 마지막 1.0 m/s. drone1(4.3, mavlink_drone.parm) 이 실제로 같은 속도로 난다.
+#   (2026-11-17 오후: 수평 8 -> 10 m/s, 착륙 마지막 0.5 -> 1.0 m/s 로 올림)
+#   상승 4 m/s·하강 3 m/s 는 airsim-quadX.parm 기본값(WP_SPD_UP 4, WP_SPD_DN 3) 그대로 쓴다.
+#   4.7 에서 이름과 단위가 바뀌었다: WPNAV_SPEED(cm/s) -> WP_SPD(m/s), WPNAV_ACCEL(cm/s/s) -> WP_ACC(m/s/s),
+#   LAND_SPEED(cm/s) -> LAND_SPD_MS(m/s) (ArduPilot Copter-4.7.1 libraries/AC_WPNav/AC_WPNav.cpp,
+#   ArduCopter/mode_land.cpp). 4.3 이름을 적으면 조용히 무시된다.
+#   airsim-quadX.parm 기본값(WP_SPD 20, WP_ACC 4)이면 drone1 보다 훨씬 빠르고 가감속 때 크게 기운다 (2026-11-16).
+#   가감속은 drone1 이 더 못 올려서(ANGLE_MAX 30도) 1.3 그대로 둔다.
+#   미들웨어 구간 제한 시간은 max(60초, 거리 / 2.5 m/s) 라 여유가 크다 (scenarios/drones.sitl.json).
+WP_SPD          10.0
+WP_ACC          1.3
+LAND_SPD_MS     1.0
+
+# 기수 방향 고정: drone1(mavlink_drone.parm)과 같게 0 (기수를 바꾸지 않음). 두 카메라 창이 같은 방향을
+# 보고, 목표가 바뀔 때마다 화면이 돌지 않는다. 4.7.1 에서도 이름이 같다 (ArduCopter/Parameters.cpp).
+WP_YAW_BEHAVIOR 0

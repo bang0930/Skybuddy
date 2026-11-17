@@ -17,6 +17,13 @@ vehicle, so the middleware does not try to land it then; the vehicle's own fails
 (ArduPilot ``FS_GCS_ENABLE``) is expected to act. The dispatcher waits up to
 ``link_recovery_timeout_s`` for telemetry; when it returns, the drone flies the task's
 return leg and lands. Either way the task fails and the drone is left ``unavailable``.
+
+Waypoint not reached in time (``WAYPOINT_TIMEOUT``) while telemetry still arrives: the
+vehicle is reachable but could not make that leg, so the drone flies the task's return
+leg and lands at home instead of landing where it stopped (fault scenario 3: "return,
+then reassign"). If no telemetry arrives at that moment, or the leg that timed out was
+the return leg itself, the earlier emergency landing in place applies. The task fails and
+the drone is left ``unavailable`` so its area can be reassigned to another drone.
 """
 
 import contextlib
@@ -50,6 +57,7 @@ from .fake_drone import METERS_PER_DEGREE_LAT
 from .registry import DroneRegistry
 
 LINK_LOST = "LINK_LOST"
+WAYPOINT_TIMEOUT = "WAYPOINT_TIMEOUT"
 # Below this altitude after a recovered link, the vehicle failsafe already landed it.
 ON_GROUND_ALT_M = 1.0
 
@@ -180,6 +188,7 @@ class Dispatcher:
         airborne = False
         succeeded = True
         lost_link: CommandTracker | None = None
+        timed_out: CommandTracker | None = None
         for tracker in execution.trackers:
             command_type = tracker.command.payload.command_type.value
             if _is_return_leg(execution, tracker):
@@ -193,6 +202,10 @@ class Dispatcher:
                 succeeded = False
                 if _error_code(tracker) == LINK_LOST:
                     lost_link = tracker
+                elif _error_code(tracker) == WAYPOINT_TIMEOUT and not _is_return_leg(
+                    execution, tracker
+                ):
+                    timed_out = tracker
                 break
 
         if not succeeded:
@@ -206,6 +219,8 @@ class Dispatcher:
                     tracker.fail("TASK_ABORTED", reason)
             if lost_link is not None:
                 self._recover_lost_link(execution, lost_link)
+            elif airborne and timed_out is not None:
+                self._return_after_timeout(execution, timed_out)
             elif airborne:
                 self._emergency_stop(task.drone_id)
 
@@ -308,7 +323,7 @@ class Dispatcher:
         tracker.transition(
             CommandStatus.TIMED_OUT,
             CommandError(
-                code="WAYPOINT_TIMEOUT",
+                code=WAYPOINT_TIMEOUT,
                 message=f"waypoint not reached within {timeout_s:.0f}s ({detail})",
                 retryable=True,
             ),
@@ -448,6 +463,46 @@ class Dispatcher:
             timeout_s=self.config.leg_timeout_s(distance),
         )
         return outcome
+
+    # ------------------------------------------------------------- waypoint timeout
+
+    def _return_after_timeout(self, execution: TaskExecution, stuck: CommandTracker) -> None:
+        """A leg timed out with the vehicle still reachable: fly home, then land there.
+
+        Telemetry is read once first. Without it the leg ran out while the link was down
+        (``waypoint_timeout_s`` shorter than ``link_loss_timeout_s``); commands may not
+        arrive, so the emergency landing in place applies as before.
+        """
+        task = execution.task
+        drone_id = task.drone_id
+        handle = self.registry.get(drone_id)
+        sample = None
+        with contextlib.suppress(Exception), handle.exclusive():
+            sample = handle.client.get_telemetry(timeout=self.telemetry_poll_timeout_s)
+        if sample is None:
+            self._emergency_stop(drone_id)
+            return
+        self.registry.set_status(drone_id, DroneStatus.RETURNING)
+        ids = {
+            "mission_id": task.mission_id,
+            "task_id": task.task_id,
+            "drone_id": drone_id,
+            "command_id": stuck.command.command_id,
+        }
+        returned = self._fly_return_leg(execution)
+        if returned == "link_lost":
+            # Lost on the way home: commands would not arrive, leave it to the vehicle failsafe.
+            self.event_log.write(
+                "timeout_return_finished", **ids, return_leg=returned, outcome="link_lost"
+            )
+            return
+        landed = self._land_or_disarm(drone_id)
+        self.event_log.write(
+            "timeout_return_finished",
+            **ids,
+            return_leg=returned,
+            outcome="landed" if landed else "disarmed",
+        )
 
     def _emergency_stop(self, drone_id: str) -> None:
         """Land first; disarm if landing cannot be confirmed (same policy as run_mission)."""
