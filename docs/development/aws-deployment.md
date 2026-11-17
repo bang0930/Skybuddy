@@ -210,18 +210,21 @@ SITL을 띄운 뒤 두 SITL 로그에 `EKF3 IMU0 is using GPS`가 나오면 양�
    tmux new -s skybuddy     # 창 나누기: Ctrl+b %   다시 붙기: tmux attach -t skybuddy
    ```
 
-## 6. 서버 첫 실행에서 확인할 것
+## 6. 서버 실행 확인 상태
 
-결과는 [검증 범위와 지원 범위](../contracts/verification-status.md)의 실제 SITL 칸에 반영합니다.
+2026-11-17 상태 갱신입니다. 갱신일은 실험 실행일을 뜻하지 않습니다. 실행 담당 확인 기준으로 Linux·Windows EC2 2대의 **미들웨어 → SITL 2대 비행 연동**을 확인했습니다. **EC2의 LLM 오케스트레이터 연결은 진행 중**입니다. 로컬 LLM 전체 연동 결과와 구분합니다.
 
-| 확인 | 기준 (로컬 2026-10-14 결과) | 관련 항목 |
+| 확인 항목 | 현재 상태 | 근거와 남은 기록 |
 |---|---|---|
-| lock-step 지연으로 시뮬레이션이 느려지지 않는지 | takeoff 12.8~20.6초, goto 3.9~7.5초, land 32.6~60.1초 | C2~C4 |
-| SITL 부하 | 두 SITL 로그에 `Main loop slow` 0회 | |
-| `check_mvp_pipeline.py --url` 통과 (LLM 없이 미들웨어 → SITL) | `[6] this run's tasks succeeded`, 종료 코드 0 | F7 |
-| 오케스트레이터 `/command`로 LLM → 미들웨어 → SITL | 계획 수락 후 두 드론 `task_finished` succeeded | F9 |
-| 클라이언트 연결이 끊겨도 비행 계속, 재접속 후 같은 임무 상태 | | F8 |
-| Ctrl+C 시 `server_stopping` 기록 | | F10 |
+| Linux·Windows EC2 간 미들웨어 → SITL 2대 비행 | 확인 | 실행 담당 공유 결과. 실행 커밋·원본 로그·정확한 시각 별도 첨부 필요 |
+| check_mvp_pipeline.py --url | 개별 결과 미기록 | 검사 스크립트 출력과 종료 코드 기록 필요 (F7) |
+| EC2 오케스트레이터 /command로 LLM → 미들웨어 → SITL | 진행 중 | 로컬에서는 전체 연동 확인, EC2에서는 별도 확인 필요 (F9) |
+| 세션 종료 후 비행 지속과 재접속 상태 조회 | 개별 결과 미기록 | F8 |
+| Ctrl+C 시 server_stopping 기록 | 개별 결과 미기록 | F10 |
+| lock-step 지연 및 SITL 부하 | 정량 결과 미기록 | 서버 명령 시간과 Main loop slow 횟수 기록 필요 |
+
+비교 기준인 로컬 2026-10-14 명령 소요 시간은 takeoff 12.8~20.6초, goto 3.9~7.5초, land 32.6~60.1초입니다. 이 값은 EC2 실측값이 아닙니다.
+[검증 범위와 지원 범위 6절](../contracts/verification-status.md#6-로컬-전체-연동과-ec2-확인-범위)을 함께 봅니다.
 
 ## 7. 문제 해결
 
