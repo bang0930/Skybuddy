@@ -58,8 +58,11 @@
   .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; background: var(--muted); flex: none; }
   .dot.ok { background: var(--ok-dot); } .dot.bad { background: var(--bad); }
 
-  .chat { display: flex; flex-direction: column; border-bottom: 2px solid var(--line); }
-  #messages { height: calc(100vh - 470px); min-height: 300px; overflow-y: auto; padding: 20px 24px;
+  /* 한 화면에 맞추기: 카드를 창 높이에 맞추고, 채팅이 남는 공간을 쓴다. 아래 3칸은 높이 고정, 칸 안에서만 스크롤 */
+  .app { height: calc(100vh - 32px); display: flex; flex-direction: column; }
+  .card { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .chat { flex: 1; min-height: 0; display: flex; flex-direction: column; border-bottom: 2px solid var(--line); }
+  #messages { flex: 1; min-height: 120px; overflow-y: auto; padding: 20px 24px;
               display: flex; flex-direction: column; gap: 14px; }
   .hint { color: var(--muted); font-size: 15px; text-align: center; margin: auto 0; }
   .msg { max-width: 78%; padding: 10px 15px; border-radius: 16px; white-space: pre-wrap; word-break: break-word; }
@@ -82,7 +85,9 @@
 
   /* 아래 영역 3칸: 작업 | 임무 상태 | 미니맵 */
   .bottom { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr) minmax(0, 1fr); }
-  .bottom > section { padding: 16px 20px; min-width: 0; }
+  .bottom { flex: none; height: 290px; }
+  .bottom > section { padding: 14px 20px; min-width: 0; min-height: 0; overflow-y: auto; }
+  .bottom > section.map-section { display: flex; flex-direction: column; overflow: hidden; }
   .bottom > section + section { border-left: 2px solid var(--line); }
   .label { font-size: 14px; font-weight: 700; color: var(--sub); margin-bottom: 8px; display: flex; justify-content: space-between; }
   .label small { color: var(--muted); font-size: 13px; font-weight: 400; }
@@ -104,7 +109,7 @@
   .drone .mono { white-space: nowrap; }
   .drone .proto { font-size: 13px; color: var(--muted); }
   /* 미니맵: minimap.py(포트 8765) 화면을 끼워 넣는다. 꺼져 있으면 점선 상자 안내 */
-  .minimap { position: relative; height: 260px; border-radius: 14px; overflow: hidden; background: var(--soft); }
+  .minimap { position: relative; flex: 1; min-height: 0; border-radius: 14px; overflow: hidden; background: var(--soft); }
   .minimap iframe { display: block; width: 100%; height: 100%; border: 0; }
   .minimap .off { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
                   justify-content: center; gap: 6px; padding: 0 16px; text-align: center; font-size: 14px;
@@ -136,6 +141,15 @@
   .chip.active { border-color: var(--sky); background: var(--sky-bg); color: var(--sky-text); }
   .banner { margin: 12px 18px 0; padding: 10px 14px; border-radius: 12px; background: var(--bad-bg); color: var(--bad); font-size: 15px; }
   /* 중간 너비: 작업 | 임무 상태 2칸, 미니맵은 아래 한 줄 전체 */
+  /* 창이 낮거나 좁으면 한 화면 맞추기를 풀고 페이지 전체를 스크롤한다 */
+  @media (max-width: 1000px), (max-height: 640px) {
+    .app { height: auto; display: block; }
+    .card, .chat { display: block; }
+    #messages { height: 45vh; min-height: 260px; }
+    .bottom { height: auto; }
+    .bottom > section { overflow: visible; }
+    .minimap { flex: none; height: 260px; }
+  }
   @media (max-width: 1000px) {
     .bottom { grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); }
     .bottom > section.map-section { grid-column: 1 / -1; border-left: 0; border-top: 2px solid var(--line); }
@@ -207,6 +221,7 @@ const POLL_MS = 3000;
 const LOW_BATTERY = 30;
 // 링크 품질(%) → 막대 칸 수. 0이면 끊김, 1~25 → 1칸, 26~50 → 2칸, 51~75 → 3칸, 76~100 → 4칸.
 // 시뮬레이션 링크 장애의 degraded 기본값은 20%(1칸), down은 0%.
+const LOW_LINK = 30; // 이하이면 빨강 (배터리 LOW_BATTERY와 같은 기준)
 function signalLevel(pct) {
   if (pct == null) return null;
   if (pct <= 0) return 0;
@@ -230,7 +245,8 @@ function batteryIcon(pct) {
 
 function signalBars(pct) {
   const level = signalLevel(pct);
-  const tone = level == null ? "" : level <= 1 ? " bad" : level === 2 ? " warn" : "";
+  // 배터리와 같이 30% 이하이면 빨강, 31~50%는 주황, 그 위는 초록
+  const tone = level == null ? "" : pct <= LOW_LINK ? " bad" : pct <= 50 ? " warn" : "";
   const label = pct == null ? "링크 품질 정보 없음"
     : level === 0 ? "링크 끊김 (0%)" : `링크 품질 ${Math.round(pct)}%`;
   const box = el("span", "signal" + tone);
