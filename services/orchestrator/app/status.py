@@ -81,6 +81,8 @@ def _drone(drone: dict) -> dict:
         "status": drone["status"],
         "connection": drone["connection_status"],
         "battery_percent": drone.get("battery_percent"),
+        # 링크 품질 0~100(%). 시뮬레이션 장애 주입이 채우고, 값을 주지 않는 어댑터는 None.
+        "link_quality_pct": drone.get("link_quality_pct"),
         "position": None
         if position is None
         else {
