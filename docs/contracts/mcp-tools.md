@@ -219,6 +219,11 @@ takeoff(탐색 고도) → goto(구역 웨이포인트) × N → 귀환 → land
 - 명령이 실패하면 남은 명령은 `failed(TASK_ABORTED)`가 되고, 비행 중이었다면 착륙을 먼저
   시도한 뒤 확인되지 않으면 disarm합니다. 실패한 드론은 `unavailable`로 바뀌어 이후 배정에서
   제외됩니다.
+- 예외: 구역 안 `goto`가 `timed_out(WAYPOINT_TIMEOUT)`이고 그 순간 텔레메트리가 들어오면(기체와 통신은
+  되지만 그 구간을 못 간 경우) 그 자리에 내리지 않고 작업의 귀환 구간(`goto(home)`)을 보내 홈으로
+  돌아온 뒤 착륙합니다(`timeout_return_finished`). 텔레메트리가 없거나 시간 초과된 구간이 귀환
+  구간이면 위의 비상 착륙입니다. 드론은 똑같이 `unavailable`이 되어, 못 끝낸 구역은 다른 드론에
+  새로 배정합니다(장애 시나리오 3: 미도달 → 귀환 → 신규 배정).
 - 드론 운용 상태: 수락 시 `assigned`, 귀환 구간 `returning`, 성공 후 `available`.
 
 ### 통신 두절 처리
@@ -278,6 +283,7 @@ takeoff(탐색 고도) → goto(구역 웨이포인트) × N → 귀환 → land
 | `command_transition` | 명령 ID·종류, 이전·현재 상태, 시각, `elapsed_since_sent_s`, 오류. `sent`에는 실제로 호출한 클라이언트(`target`: drone_id, protocol, binding) |
 | `task_finished` | 작업 최종 상태 |
 | `emergency_stop` | 비상 정지 대상과 착륙 확인 여부 |
+| `timeout_return_finished` | 웨이포인트 미도달 뒤 귀환: 시간 초과된 명령(`command_id`), 귀환 구간 결과(`return_leg`), `outcome`(`landed`, `disarmed`, `link_lost`) |
 | `link_lost` | 두절 판정된 명령(`command_id`), 복구 대기 시간(`wait_s`) |
 | `link_restored` / `link_not_restored` | 두절 지속 시간(`outage_s`) / 기다린 시간(`waited_s`) |
 | `link_recovery_finished` | `outcome`(`landed`, `disarmed`, `already_on_ground`, `link_lost_again`), 귀환 구간 결과(`return_leg`) |

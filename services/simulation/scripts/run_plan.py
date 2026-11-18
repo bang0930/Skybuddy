@@ -49,7 +49,7 @@ def drone_text(d):
             f"고도 {'-' if alt is None else f'{alt:.0f}m'}")
 
 
-async def run(url, mission_id, assignments, timeout_s):
+async def run(url, mission_id, assignments, timeout_s, wait=True):
     async with connect(url) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
@@ -68,6 +68,8 @@ async def run(url, mission_id, assignments, timeout_s):
             task_ids = {task["task_id"] for task in result["tasks"]}
             for task in result["tasks"]:
                 print(f"    {task['task_id']}: {task['area_id']}, 명령 {task['command_count']}개")
+            if not wait:
+                return 0               # 진행은 다른 도구(mission_check.py --follow)가 따라간다
 
             started, last = time.monotonic(), None
             while True:
@@ -105,8 +107,9 @@ def main(argv=None):
     parser.add_argument("assignments", nargs="+", type=assignment, help="드론=구역[:우선순위]")
     parser.add_argument("--url", default=os.environ.get("MCP_SERVER_URL") or "http://127.0.0.1:9000/mcp")
     parser.add_argument("--timeout", type=float, default=600.0)
+    parser.add_argument("--no-wait", action="store_true", help="계획 수락까지만 보고 끝낸다 (비행은 서버에서 계속)")
     args = parser.parse_args(argv)
-    return asyncio.run(run(args.url, args.mission_id, args.assignments, args.timeout))
+    return asyncio.run(run(args.url, args.mission_id, args.assignments, args.timeout, wait=not args.no_wait))
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@
   -------   ---------------------------------------------------   -----------------------------------
   battery   battery_remaining_pct, battery_voltage_v               DroneState.battery_percent / _voltage_v
             drain: 시동이 걸린 동안만 줄어든다 (비행 시간 기준)
+            rtl_pct: 이 값 이하가 되면 기체 배터리 failsafe 귀환(RTL) 한 번
             0% 가 되면 더 날 수 없으므로 그 자리 강제 착륙(LAND)
   link      link_quality_pct (0~100, 텔레메트리 새 필드)          매퍼에 한 줄 추가하면 DroneState 로
             range: 홈에서 멀어질수록 품질이 내려가고,
@@ -22,15 +23,19 @@ SITL 은 배터리가 비행 내내 100% 이고(실측) 통신도 끊기지 않�
 비행 컨트롤러(ArduPilot)는 이 장애를 모른다. 그래서 실제 기체라면 스스로 했을 동작을 어댑터가 대신 보낸다.
   - 통신 두절이 failsafe_after_s(기본 5초 = ArduPilot FS_GCS_TIMEOUT 기본값) 이어지면 RTL 등.
     미들웨어(#42)는 두절 중 명령을 보내지 않고 이 failsafe 를 기다린다.
-  - 배터리 0%: 그 자리 착륙(LAND). 그 전에는 아무것도 하지 않는다. ArduPilot 배터리 failsafe 의
-    기본 동작(BATT_FS_LOW_ACT, BATT_FS_CRT_ACT = 0)이 "경고만"이기 때문이다.
-    즉 0% 전에 귀환시키는 판단은 미들웨어·LLM 몫이다.
+  - 배터리 부족(rtl_pct 를 준 경우): 잔량이 그 값 이하가 되면 RTL. ArduPilot 배터리 failsafe 를
+    BATT_FS_LOW_ACT=2(RTL)로 설정한 기체와 같다. 미들웨어에는 기체가 목표로 안 가는 것으로 보여
+    WAYPOINT_TIMEOUT 이 되고, 미들웨어가 귀환 구간을 보낸 뒤 착륙시킨다 (장애 시나리오 2).
+  - 배터리 0%: 그 자리 착륙(LAND). rtl_pct 가 없으면 그 전에는 아무것도 하지 않는다 (ArduPilot 기본값
+    BATT_FS_LOW_ACT, BATT_FS_CRT_ACT = 0 은 "경고만").
 
 [제어 방법]
 fault.py 가 제어 파일(JSON)을 쓰고 어댑터가 0.2초마다 읽는다. 프로세스가 달라도 되므로
 미들웨어 서버를 띄운 채 다른 터미널에서 장애를 걸고 풀 수 있다.
 
     python3 fault.py battery drone-01 0 --drain 120     비행 120초 동안 지금 값 -> 0%
+    python3 fault.py battery drone-01 0 --from 40 --drain 140 --rtl-at 20
+                                                       40%에서 시작, 비행 중 줄다가 20%에서 기체 귀환(RTL)
     python3 fault.py link drone-02 range --degraded-m 250 --down-m 330
     python3 fault.py clear
 
@@ -243,6 +248,8 @@ def validate_entry(entry):
             raise ValueError("ramp_s, drain_s 는 0 이상이어야 한다")
         if ramp > 0 and drain > 0:
             raise ValueError("--ramp(시계 기준)와 --drain(비행 시간 기준)은 하나만 쓴다")
+        if p.get("rtl_pct") is not None and not 0.0 < float(p["rtl_pct"]) < 100.0:
+            raise ValueError(f"배터리 귀환 기준 rtl_pct 는 0~100 사이여야 한다: {p['rtl_pct']}")
     elif kind == "link":
         mode = p.get("mode")
         if mode not in LINK_MODES:
@@ -286,6 +293,8 @@ def describe_params(kind, params):
             text = f"{start_text}에서 {ramp:g}초 동안 {target:g}%까지 감소"
         else:
             text = f"{target:g}%"
+        if p.get("rtl_pct") is not None:
+            text += f", {float(p['rtl_pct']):g}% 이하면 기체 귀환(RTL)"
         if target <= 0:
             text += ", 0%가 되면 그 자리 강제 착륙"
         return text
@@ -377,6 +386,7 @@ class FaultInjector:
         self._battery_start = {}      # 배터리 항목 id -> (시작 잔량, 시작 시점의 비행 누적초)
         self._battery_level_logged = {}  # 배터리 항목 id -> 마지막으로 기록한 10% 구간
         self._battery_empty_done = {}    # 배터리 항목 id -> 0% 강제 착륙을 보냈는지
+        self._battery_low_done = {}      # 배터리 항목 id -> 부족(rtl_pct) 귀환을 보냈는지
         self._battery_value_now = None   # 지금 주입 중인 잔량 (없으면 None)
 
         self._active = {}             # kind -> 지금 적용 중인 항목 id
@@ -635,9 +645,30 @@ class FaultInjector:
             self._battery_level_logged[entry_id] = level
             self._log("fault_battery_level", entry_id=entry_id, level=level, pct=value,
                       voltage_v=self._voltage_for(value), **self._where())
+        rtl_pct = ((self._entry(entry_id) or {}).get("params") or {}).get("rtl_pct")
+        if (rtl_pct is not None and 0 < value <= float(rtl_pct) and actions and self._armed is True
+                and entry_id not in self._battery_low_done):
+            self._battery_low_return(entry_id, value)
         if (value <= 0 and actions and self._armed is True
                 and entry_id not in self._battery_empty_done):
             self._battery_forced_landing(entry_id)
+
+    def _battery_low_return(self, entry_id, value):
+        """배터리 부족: 기체 배터리 failsafe(BATT_FS_LOW_ACT=2, RTL)를 흉내 내 홈으로 돌아가게 한다 (한 번)."""
+        where = self._where()
+        self._battery_low_done[entry_id] = False
+        handler = self._failsafe_handler
+        if handler is None:
+            self._log("fault_battery_low", entry_id=entry_id, pct=value, sent=False, reason="no_handler", **where)
+            return
+        try:
+            handler("rtl")
+        except Exception as e:  # noqa: BLE001 - 장애 흉내가 어댑터 동작을 깨면 안 된다
+            self._log("fault_battery_low", entry_id=entry_id, pct=value, sent=False,
+                      reason=f"{type(e).__name__}: {e}", **where)
+            return
+        self._battery_low_done[entry_id] = True
+        self._log("fault_battery_low", entry_id=entry_id, pct=value, sent=True, mode="rtl", **where)
 
     def _battery_forced_landing(self, entry_id):
         """배터리 0%: 기체가 더 날 수 없다. 실제라면 추락·불시착이고, 시뮬레이션에서는 그 자리 착륙으로 흉내 낸다."""
@@ -1024,6 +1055,8 @@ class FaultInjector:
                                              if flight0 is not None else None),
                     "empty": value is not None and value <= 0,
                     "forced_landing_sent": self._battery_empty_done.get(battery_id),
+                    "rtl_pct": float(p["rtl_pct"]) if p.get("rtl_pct") is not None else None,
+                    "low_return_sent": self._battery_low_done.get(battery_id),
                     "active_since": utc_iso(self._active_since["battery"]),
                 }
             link_id = self._active.get("link")
@@ -1130,6 +1163,12 @@ class FaultInjector:
                      if fields.get("home_distance_m") is not None else "")
             self._stderr(f"{self.name} 배터리 {fields['pct']:g}% {fields['voltage_v']:.2f}V "
                          f"(비행 {fields['flight_s']:g}초{where})")
+        elif event == "fault_battery_low":
+            if fields.get("sent"):
+                self._stderr(f"{self.name} 배터리 {fields['pct']:g}% - 기체 배터리 failsafe RTL (홈으로 귀환. "
+                             f"실제 기체가 스스로 할 동작을 대신 보냄)")
+            else:
+                self._stderr(f"{self.name} 배터리 부족 귀환(RTL)을 보내지 못함: {fields.get('reason')}")
         elif event == "fault_battery_empty":
             if fields.get("sent"):
                 self._stderr(f"{self.name} 배터리 0% - 더 날 수 없어 그 자리 강제 착륙(LAND) "

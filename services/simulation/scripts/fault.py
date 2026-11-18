@@ -6,6 +6,8 @@
   배터리 부족 (잔량과 전압이 샘플마다 함께 바뀐다)
     python3 fault.py battery drone-01 0 --drain 120               비행(시동 걸린 동안) 120초에 걸쳐 지금 값 -> 0%
     python3 fault.py battery drone-01 0 --drain 120 --from 60     60%에서 시작
+    python3 fault.py battery drone-01 0 --from 40 --drain 140 --rtl-at 20
+                                                                  40%에서 줄다가 20%에서 기체 귀환(RTL)
     python3 fault.py battery drone-02 25                          지금부터 25%
     python3 fault.py battery drone-01 15 --ramp 60 --after-takeoff 20
                                                                    이륙 20초 뒤부터 시계로 60초 동안 -> 15%
@@ -201,6 +203,10 @@ def format_event(ev):
         where = (f", 홈에서 {ev['home_distance_m']}m" if ev.get("home_distance_m") is not None else "")
         detail = (f"배터리 {ev.get('pct')}% {ev.get('voltage_v')}V "
                   f"({ev.get('level')}% 이하, 비행 {ev.get('flight_s')}초{where})")
+    elif event == "fault_battery_low":
+        where = (f", 홈에서 {ev['home_distance_m']}m" if ev.get("home_distance_m") is not None else "")
+        detail = (f"배터리 {ev.get('pct')}% - 기체 배터리 failsafe 귀환(RTL)" + where if ev.get("sent")
+                  else f"배터리 부족 귀환 못 보냄: {ev.get('reason')}")
     elif event == "fault_battery_empty":
         where = (f", 홈에서 {ev['home_distance_m']}m" if ev.get("home_distance_m") is not None else "")
         detail = ("배터리 0% - 그 자리 강제 착륙(LAND)" + where if ev.get("sent")
@@ -259,8 +265,10 @@ def put_entry(kind, args, params):
 
 
 def cmd_battery(args):
-    put_entry("battery", args, {"pct": args.pct, "from_pct": args.from_pct,
-                                "ramp_s": args.ramp, "drain_s": args.drain})
+    params = {"pct": args.pct, "from_pct": args.from_pct, "ramp_s": args.ramp, "drain_s": args.drain}
+    if args.rtl_pct is not None:
+        params["rtl_pct"] = args.rtl_pct
+    put_entry("battery", args, params)
 
 
 def cmd_link(args):
@@ -564,6 +572,9 @@ def main(argv=None):
                      help="시계 기준으로 이 시간 동안 pct 까지 줄인다 (지상에서도 줄어든다)")
     p.add_argument("--from", dest="from_pct", type=float, default=None, metavar="PCT",
                    help="감소 시작 잔량 (기본: 장애가 걸리는 순간의 실제 값. SITL 은 100)")
+    p.add_argument("--rtl-at", dest="rtl_pct", type=float, default=None, metavar="PCT",
+                   help="비행 중 잔량이 이 값(%%) 이하가 되면 기체 배터리 failsafe 귀환(RTL) 한 번 "
+                        "(ArduPilot BATT_FS_LOW_ACT=2 흉내)")
     common(p)
     p.set_defaults(func=cmd_battery)
 
