@@ -156,6 +156,32 @@ def test_fake_drone_heading_never_reaches_360() -> None:
     assert drone.get_telemetry()["heading_deg"] == 0.0
 
 
+def test_fake_drones_report_full_link_quality() -> None:
+    registry = DroneRegistry.from_config(fast_registry_config())
+    registry.connect_all()
+
+    for state in registry.states():
+        assert state.link_quality_pct == 100.0
+        assert state.telemetry_availability(TelemetryField.LINK_QUALITY) == (
+            TelemetryAvailability.AVAILABLE
+        )
+    registry.close_all()
+
+
+def test_out_of_range_link_quality_falls_back_to_the_last_valid_sample() -> None:
+    registry = DroneRegistry.from_config(fast_registry_config())
+    registry.connect_all()
+    handle = registry.get("drone-02")
+    registry.state("drone-02")
+
+    handle._record(dict(handle.latest_sample()[0], link_quality_pct=120.0))
+    state = registry.state("drone-02", refresh=False)
+
+    assert state.link_quality_pct == 100.0  # last valid sample
+    assert "link_quality_pct" in handle.sample_error
+    registry.close_all()
+
+
 def test_invalid_sample_does_not_break_other_drones_or_the_report() -> None:
     clock = ManualClock()
     registry = DroneRegistry.from_config(fast_registry_config(), clock=clock)

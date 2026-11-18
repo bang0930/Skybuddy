@@ -68,6 +68,11 @@ ROS ENU yaw는 동쪽 0도·반시계 방향이고 공통 heading은 진북 0도
 `unsupported`로 반환합니다. capabilities에는 있지만 이번 샘플에 값이 없는 필드는
 `temporarily_unavailable`입니다.
 
+`link_quality`(`DroneState.link_quality_pct`)는 AP_DDS 토픽이 아니지만 capabilities에 포함합니다.
+미들웨어가 실제로 쓰는 `Ros2Drone`이 시뮬레이션 장애 주입으로 `link_quality_pct`를 채우고, 공통
+`TelemetryStateMapper`가 그대로 옮깁니다(장애 없음 100). 이 문서의 토픽 기반 Mapper
+(`ApDdsStateMapper`)에는 해당 입력이 없어 값이 항상 `None`, 즉 `temporarily_unavailable`입니다.
+
 ### 연결 상태
 
 최신 토픽 수신 후 경과 시간이 `topic_timeout_s` 이하이면 `connected`, 초과하거나 수신

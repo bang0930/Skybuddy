@@ -42,6 +42,7 @@ binding은 연결 시 수신한 Heartbeat의 source system/component로 생성�
 | `battery_remaining_pct` | `battery_percent` | 0~100 백분율 |
 | `vibration_x/y/z` | `vibration` | 세 축을 하나의 값 객체로 묶음 |
 | `clipping` | `clipping_count` | 세 가속도계 clipping 합계 |
+| `link_quality_pct` | `link_quality_pct` | 0~100 백분율. 시뮬레이션 장애 주입이 채움(장애 없음 100). 실기체라면 `RADIO_STATUS`로 채울 자리 |
 | `timestamp` | `observed_at` | Unix epoch를 UTC datetime으로 변환 |
 
 필드 변환은 프로토콜 공통 `TelemetryStateMapper`(`app/adapters/telemetry.py`)가 수행하며,
