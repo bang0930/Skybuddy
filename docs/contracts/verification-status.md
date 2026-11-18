@@ -47,6 +47,7 @@
 | S5 | 연결 실패 드론이 있어도 서버 계속 실행, 계획은 `DRONE_DISCONNECTED`로 거부 | 검증 | 미검증 (모든 연결 성공) | `test_runtime_registry.py` |
 | S6 | 블로킹 명령(takeoff, land) 중 `disconnected` 표시 (K1) | 부분 | 검증 (A, B, C: land 구간에서 발생, takeoff 구간은 미발생) | FakeDrone `land()` 구간에서 재현. takeoff 구간은 FakeDrone이 텔레메트리를 읽어 재현 안 됨 |
 | S7 | 연결 유지 상태로 상태 조회를 반복해도 최신 위치 | 미검증 | 검증 (C: 119회 조회 동안 위치가 비행 경로를 따라 갱신) | FakeDrone은 버퍼가 없음. MAVLink `_drain()` 동작은 실제 SITL에서만 의미가 있음 |
+| S8 | 텔레메트리 `link_quality_pct` → `DroneState.link_quality_pct`, MCP 도구 결과(`get_mission_context`, `get_mission_status`)에 드론별 값 표시, 0~100 밖 샘플 거부 | 검증 | 미검증 (장애 주입 SITL에서 미들웨어 경유 확인 안 함) | `test_telemetry_mapper.py`, `test_runtime_registry.py`, `test_mcp_server.py` (2026-11-18). FakeDrone은 항상 100 |
 
 ### 1-3. 명령 실행
 
@@ -91,7 +92,7 @@
 | 드론 수 | 설정 파일에 등록한 수. 검증 구성은 프로토콜별 1대씩 2대 |
 | 명령 | `takeoff`, `goto`, `land`, `disarm`. `return_home`은 클라이언트에 메서드가 있을 때만 |
 | 고도 | 홈 기준 상대 고도(`home_relative`), 30m 이상 |
-| 텔레메트리 | 공통 `Telemetry` 필드. AP_DDS는 위성 수, 진동 3축, clipping을 제공하지 않음 |
+| 텔레메트리 | 공통 `Telemetry` 필드. AP_DDS는 위성 수, 진동 3축, clipping을 제공하지 않음. 링크 품질(`link_quality_pct`)은 시뮬레이션 장애 주입 값으로 두 프로토콜 모두 전달 |
 | 배치 | 미들웨어가 어댑터를 같은 프로세스에서 import. 시뮬레이터와 같은 WSL 환경에서 실행해야 함 |
 | MCP 전송 | stdio, streamable HTTP(`/mcp`, 기본 `127.0.0.1:9000`, 인증 없음). `MCP_TRANSPORT`로 선택 ([mcp-tools.md](mcp-tools.md#전송-방식)) |
 

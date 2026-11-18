@@ -38,7 +38,8 @@
           "battery_voltage",
           "battery_percent",
           "vibration",
-          "clipping"
+          "clipping",
+          "link_quality"
         ]
       },
       "position": {
@@ -56,6 +57,7 @@
       "battery_percent": 82.5,
       "vibration": null,
       "clipping_count": null,
+      "link_quality_pct": 100.0,
       "status": "available",
       "connection_status": "connected",
       "observed_at": "2026-08-31T12:00:00Z"
@@ -115,6 +117,13 @@
 예를 들어 AP_DDS가 `satellites_visible`을 지원하지 않으면 해당 값을 `null`로 두고
 `telemetry_fields`에도 포함하지 않습니다. MAVLink가 이 필드를 지원하지만 이번 표본에서 값이
 도착하지 않았다면 `telemetry_fields`에는 포함하고 값만 `null`로 둡니다.
+
+`link_quality_pct`(capabilities 이름 `link_quality`)는 링크 품질 0~100(%)입니다. 프로토콜 메시지가
+아니라 시뮬레이션의 장애 주입이 채우는 값이며, 통신 장애가 없으면 100, 통신 악화·거리 장애에서는
+낮아집니다. 실기체의 RSSI·패킷 수신율에 해당하는 모의값입니다. 시뮬레이션 어댑터(`MavlinkDrone`,
+`Ros2Drone`)가 모두 채우므로 두 프로토콜 capabilities에 포함합니다. 값이 `null`이면
+`temporarily_unavailable`이고, 0~100 밖의 값은 `battery_percent`와 같이 계약 위반으로 그 샘플을
+거부합니다. 귀환 판단 등에 이 값을 쓰는 로직은 아직 없습니다.
 
 ## Mission Plan
 

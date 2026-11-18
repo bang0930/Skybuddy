@@ -122,6 +122,29 @@ def test_drone_rejects_battery_outside_percentage_range(
         )
 
 
+def test_drone_rejects_link_quality_the_adapter_does_not_declare() -> None:
+    # MAVLINK_CAPABILITIES in this module omits LINK_QUALITY.
+    with pytest.raises(ValidationError, match="link_quality_pct is populated"):
+        DroneState(
+            drone_id="drone-01",
+            protocol=ProtocolType.MAVLINK,
+            capabilities=MAVLINK_CAPABILITIES,
+            link_quality_pct=80.0,
+            status=DroneStatus.AVAILABLE,
+            connection_status=ConnectionStatus.CONNECTED,
+            observed_at=NOW,
+        )
+
+
+def test_drone_serializes_link_quality_as_null_when_unknown() -> None:
+    drone = make_drone()
+
+    assert drone.model_dump(mode="json")["link_quality_pct"] is None
+    assert drone.telemetry_availability(TelemetryField.LINK_QUALITY) == (
+        TelemetryAvailability.UNSUPPORTED
+    )
+
+
 def test_drone_rejects_out_of_range_coordinate() -> None:
     with pytest.raises(ValidationError, match="latitude"):
         GeoPosition(

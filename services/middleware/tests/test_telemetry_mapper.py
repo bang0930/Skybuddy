@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 
 import pytest
+from pydantic import ValidationError
 
 from app.adapters import AP_DDS_CAPABILITIES, MAVLINK_CAPABILITIES, TelemetryStateMapper
 from app.schemas import (
@@ -155,3 +156,97 @@ def test_heading_is_normalized_into_zero_to_360(raw, expected) -> None:
         telemetry_age_s=0.1,
     )
     assert state.heading_deg == pytest.approx(expected)
+
+
+# ------------------------------------------------------------------ link_quality_pct
+
+
+@pytest.mark.parametrize(
+    ("protocol", "capabilities", "sample"),
+    [
+        (ProtocolType.MAVLINK, MAVLINK_CAPABILITIES, telemetry),
+        (ProtocolType.AP_DDS, AP_DDS_CAPABILITIES, ap_dds_telemetry),
+    ],
+)
+def test_link_quality_is_mapped_for_both_protocols(protocol, capabilities, sample) -> None:
+    # The simulation fills it through fault injection for both adapters (24.2 = 250m of
+    # a range fault with --down-m 330).
+    state = TelemetryStateMapper().map(
+        sample() | {"link_quality_pct": 24.2},
+        drone_id="drone-01",
+        protocol=protocol,
+        capabilities=capabilities,
+        status=DroneStatus.ASSIGNED,
+        telemetry_age_s=0.1,
+    )
+
+    assert state.link_quality_pct == pytest.approx(24.2)
+    assert state.telemetry_availability(TelemetryField.LINK_QUALITY) == (
+        TelemetryAvailability.AVAILABLE
+    )
+
+
+@pytest.mark.parametrize("raw", ["missing", None, ""])
+def test_missing_link_quality_is_none_and_temporarily_unavailable(raw) -> None:
+    # A real vehicle adapter reports None; older samples have no key at all.
+    sample = telemetry()
+    if raw != "missing":
+        sample["link_quality_pct"] = raw
+
+    state = TelemetryStateMapper().map(
+        sample,
+        drone_id="drone-01",
+        protocol=ProtocolType.MAVLINK,
+        capabilities=MAVLINK_CAPABILITIES,
+        status=DroneStatus.AVAILABLE,
+        telemetry_age_s=0.1,
+    )
+
+    assert state.link_quality_pct is None
+    assert state.telemetry_availability(TelemetryField.LINK_QUALITY) == (
+        TelemetryAvailability.TEMPORARILY_UNAVAILABLE
+    )
+
+
+@pytest.mark.parametrize("raw", [0, 100])
+def test_link_quality_accepts_both_ends_of_the_range(raw) -> None:
+    state = TelemetryStateMapper().map(
+        telemetry(link_quality_pct=raw),
+        drone_id="drone-01",
+        protocol=ProtocolType.MAVLINK,
+        capabilities=MAVLINK_CAPABILITIES,
+        status=DroneStatus.AVAILABLE,
+        telemetry_age_s=0.1,
+    )
+
+    assert state.link_quality_pct == float(raw)
+
+
+@pytest.mark.parametrize("raw", [-0.1, 100.1])
+def test_link_quality_outside_percentage_range_is_rejected(raw) -> None:
+    # Same as battery_percent: the sample is invalid, not clamped.
+    with pytest.raises(ValidationError, match="link_quality_pct"):
+        TelemetryStateMapper().map(
+            telemetry(link_quality_pct=raw),
+            drone_id="drone-01",
+            protocol=ProtocolType.MAVLINK,
+            capabilities=MAVLINK_CAPABILITIES,
+            status=DroneStatus.AVAILABLE,
+            telemetry_age_s=0.1,
+        )
+
+
+@pytest.mark.parametrize(
+    ("raw", "message"),
+    [("good", "must be numeric"), (True, "must be numeric"), (float("nan"), "must be finite")],
+)
+def test_non_numeric_link_quality_is_rejected(raw, message) -> None:
+    with pytest.raises(ValueError, match=f"link_quality_pct {message}"):
+        TelemetryStateMapper().map(
+            telemetry(link_quality_pct=raw),
+            drone_id="drone-01",
+            protocol=ProtocolType.MAVLINK,
+            capabilities=MAVLINK_CAPABILITIES,
+            status=DroneStatus.AVAILABLE,
+            telemetry_age_s=0.1,
+        )

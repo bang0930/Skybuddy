@@ -49,6 +49,9 @@ AP_DDS_CAPABILITIES = DroneCapabilities(
         TelemetryField.GPS_EPH,
         TelemetryField.BATTERY_VOLTAGE,
         TelemetryField.BATTERY_PERCENT,
+        # Not an AP_DDS topic: Ros2Drone fills it through the simulation's fault
+        # injection, the same way MavlinkDrone does.
+        TelemetryField.LINK_QUALITY,
     ],
 )
 

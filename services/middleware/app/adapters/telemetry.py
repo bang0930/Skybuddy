@@ -102,6 +102,7 @@ class TelemetryStateMapper:
             battery_percent=optional_float(telemetry, "battery_remaining_pct"),
             vibration=vibration,
             clipping_count=optional_int(telemetry, "clipping"),
+            link_quality_pct=optional_float(telemetry, "link_quality_pct"),
             status=status,
             connection_status=self.connection_status(telemetry_age_s),
             observed_at=datetime.fromtimestamp(timestamp, tz=timezone.utc),

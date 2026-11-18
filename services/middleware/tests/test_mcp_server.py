@@ -154,3 +154,24 @@ def test_split_search_area_unknown_mission_is_a_tool_error(service) -> None:
     result = run(call())
     assert result.is_error
     assert "mission-404" in result.content[0].text
+
+
+def test_mission_status_reports_link_quality_per_drone(service) -> None:
+    async def call():
+        async with Client(create_mcp_server(service)) as client:
+            context = (await client.call_tool(
+                "get_mission_context", {"mission_id": "mission-001"}
+            )).data
+            status = (await client.call_tool(
+                "get_mission_status", {"mission_id": "mission-001"}
+            )).data
+            return context, status
+
+    context, status = run(call())
+
+    for result in (context, status):
+        drones = {drone["drone_id"]: drone for drone in result["drones"]}
+        assert set(drones) == {"drone-01", "drone-02"}
+        for drone in drones.values():
+            assert drone["link_quality_pct"] == 100.0
+            assert "link_quality" in drone["capabilities"]["telemetry_fields"]

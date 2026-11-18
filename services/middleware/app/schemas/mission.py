@@ -83,6 +83,7 @@ class TelemetryField(str, Enum):
     BATTERY_PERCENT = "battery_percent"
     VIBRATION = "vibration"
     CLIPPING = "clipping"
+    LINK_QUALITY = "link_quality"
 
 
 class TelemetryAvailability(str, Enum):
@@ -158,6 +159,9 @@ class DroneState(ContractModel):
     battery_percent: float | None = Field(default=None, ge=0, le=100)
     vibration: Vibration | None = None
     clipping_count: int | None = Field(default=None, ge=0)
+    # Link quality 0~100 %. The simulation fills it through fault injection (100 when no
+    # link fault is active); a real vehicle adapter would derive it from radio status.
+    link_quality_pct: float | None = Field(default=None, ge=0, le=100)
     status: DroneStatus
     connection_status: ConnectionStatus
     observed_at: datetime
@@ -320,4 +324,5 @@ _TELEMETRY_ATTRIBUTES: dict[TelemetryField, str] = {
     TelemetryField.BATTERY_PERCENT: "battery_percent",
     TelemetryField.VIBRATION: "vibration",
     TelemetryField.CLIPPING: "clipping_count",
+    TelemetryField.LINK_QUALITY: "link_quality_pct",
 }
