@@ -1,7 +1,11 @@
 {
   "telemetry_timeout_s": 3.0,
   "waypoints": {
-    "generator": "coverage"
+    "generator": "coverage",
+    "max_leg_m": 130
+  },
+  "dispatcher": {
+    "min_ground_speed_m_s": 2.5
   },
   "drones": [
     {

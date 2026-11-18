@@ -38,7 +38,9 @@ try:
 except ImportError:
     sys.exit("msgpack 이 없다. 먼저 실행: python3 -m pip install --user msgpack")
 
-DEFAULT_HOST, DEFAULT_PORT = "127.0.0.1", 41451  # AirSim 기본 RPC 포트 (settings.json ApiServerPort)
+# AirSim 이 다른 기계(예: AWS Windows 서버)에 있으면 AIRSIM_HOST 로 그 주소를 준다.
+DEFAULT_HOST = os.environ.get("AIRSIM_HOST") or "127.0.0.1"
+DEFAULT_PORT = 41451  # AirSim 기본 RPC 포트 (settings.json ApiServerPort)
 # AirSim EarthUtils 는 지구 반지름 6378137m 로 위경도를 NED 로 바꾼다. 1도 = 111319.49m.
 # 미들웨어·어댑터가 쓰는 111320 과 300m 에서 1mm 차이라 같은 좌표로 봐도 된다.
 M_PER_DEG = 6378137.0 * math.pi / 180.0
@@ -339,8 +341,57 @@ def scan(args):
     print(f"저장: {path}")
 
 
-COLORS = [[1.0, 0.2, 0.2, 1.0], [0.2, 1.0, 0.2, 1.0], [0.2, 0.5, 1.0, 1.0], [1.0, 1.0, 0.2, 1.0],
-          [1.0, 0.3, 1.0, 1.0], [0.2, 1.0, 1.0, 1.0]]
+COMPASS = ("북", "남", "서", "동")
+# 2x2 섹터 선 색은 동서남북 이름으로 정한다: 북 빨강, 남 파랑, 동 주황, 서 하늘.
+# 초록(drone-01)·연노랑(drone-02)은 드론 색(= AirSim 작은 창 1·2 테두리 색)이라 섹터에는 쓰지 않는다.
+COMPASS_COLORS = {"북": [1.0, 0.2, 0.2, 1.0], "남": [0.2, 0.45, 1.0, 1.0],
+                  "동": [1.0, 0.55, 0.0, 1.0], "서": [0.2, 0.9, 1.0, 1.0]}
+# 2x2 가 아닌 임무는 섹터 순서대로 이 색 (같은 이유로 초록·노랑 없음)
+COLORS = [[1.0, 0.2, 0.2, 1.0], [0.2, 0.45, 1.0, 1.0], [1.0, 0.55, 0.0, 1.0], [0.2, 0.9, 1.0, 1.0],
+          [1.0, 0.3, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0]]
+
+
+def compass_names(centers):
+    """2x2 섹터 이름 {area_id: 북·남·서·동}. 센터는 홈(스폰 지점, 원점) 기준 (동, 북) m.
+
+    홈에서 가장 먼 섹터 = 북, 가장 가까운 섹터 = 남. 남은 둘은 홈에서 북 섹터를 바라볼 때 왼쪽 = 서, 오른쪽 = 동.
+    mission-101 이면 서 북 / 남 동 (sector-1-0 서, sector-1-1 북, sector-0-0 남, sector-0-1 동).
+    섹터가 4개가 아니거나 두 섹터가 같은 쪽에 있으면 {} (원래 이름을 쓴다).
+    """
+    if len(centers) != 4:
+        return {}
+    order = sorted(centers, key=lambda k: math.hypot(*centers[k]))
+    near, far = order[0], order[-1]
+    fx, fy = centers[far]
+    names = {far: "북", near: "남"}
+    for k in order[1:3]:
+        x, y = centers[k]
+        names[k] = "서" if fx * y - fy * x > 0 else "동"      # 홈->북 방향의 왼쪽(반시계)이면 서
+    return names if sorted(names.values()) == sorted(COMPASS) else {}
+
+
+def area_centers(mission, lat0, lon0):
+    """{area_id: (동, 북) m} - 원점(홈) 기준 섹터 중심 (minimap.py Frame.xy 와 같은 식)."""
+    centers = {}
+    for area in mission.get("search_areas") or []:
+        pts = [((p["longitude"] - lon0) * M_PER_DEG * math.cos(math.radians(p["latitude"])),
+                (p["latitude"] - lat0) * M_PER_DEG) for p in area.get("boundary") or []]
+        if pts:
+            centers[area.get("area_id")] = (sum(e for e, _ in pts) / len(pts), sum(n for _, n in pts) / len(pts))
+    return centers
+
+
+def sector_color(index, name):
+    """섹터 선 색. 동서남북 이름이 있으면 그 색, 없으면 순서(index)대로."""
+    return COMPASS_COLORS.get(name) or COLORS[index % len(COLORS)]
+
+
+def sector_styles(mission, lat0, lon0):
+    """{area_id: (동서남북 이름 또는 None, 색)} - AirSim 선(draw)과 미니맵이 같은 값을 쓴다."""
+    names = compass_names(area_centers(mission, lat0, lon0))
+    return {area.get("area_id"): (names.get(area.get("area_id")),
+                                  sector_color(i, names.get(area.get("area_id"))))
+            for i, area in enumerate(mission.get("search_areas") or [])}
 
 
 def vec(north, east, up):
@@ -385,6 +436,7 @@ def coverage_paths(mission, config_path):
 def draw(args):
     """임무 파일의 구역 경계를 탐색 고도에 그리고, 꼭짓점마다 지면에서 그 고도까지 기둥을 세운다.
 
+    선만 그린다. 섹터 이름·고도 글씨(--labels)와 지그재그 수색 경로(--paths)는 드론을 가려서 기본으로 안 그린다.
     AirSim 화면에만 보이는 표시다. 드론 비행이나 충돌에는 영향이 없다.
     """
     origin, vehicles, settings_port, _ = load_settings()
@@ -414,7 +466,7 @@ def draw(args):
     lat0, lon0 = origin[0], origin[1]
     print(f"홈 지면 = 원점 {home_up:+.1f}m. 탐색 고도(홈 기준)에 맞춰 그린다")
     paths = {}
-    if not args.no_paths:
+    if args.paths:
         try:
             paths, info = coverage_paths(mission, args.drones_config)
             print(f"수색 경로: 미들웨어 함수로 계산 ({info}, 설정 {args.drones_config})")
@@ -425,8 +477,9 @@ def draw(args):
         return ((lat - lat0) * M_PER_DEG,
                 (lon - lon0) * M_PER_DEG * math.cos(math.radians(lat)))
 
-    for i, area in enumerate(mission.get("search_areas", [])):
-        color = COLORS[i % len(COLORS)]
+    styles = sector_styles(mission, lat0, lon0)          # 2x2 면 북 빨강·남 파랑·동 주황·서 하늘 (미니맵과 같은 색)
+    for area in mission.get("search_areas", []):
+        name, color = styles[area["area_id"]]
         top = home_up + float(area["search_altitude_m"])        # 원점 기준 높이
         pts = []
         for p in area["boundary"]:
@@ -443,11 +496,12 @@ def draw(args):
         rpc.call("simPlotLineList", posts, color, args.thickness * 0.6, -1.0, True)
         cn = sum(n for n, _ in pts) / len(pts)
         ce = sum(e for _, e in pts) / len(pts)
-        try:
-            rpc.call("simPlotStrings", [f"{area['area_id']} {area['search_altitude_m']:g}m"],
-                     [vec(cn, ce, top + 5)], 10.0, color, 3600.0)
-        except Exception:  # noqa: BLE001 - 글자 표시는 없어도 된다
-            pass
+        if args.labels:
+            try:
+                rpc.call("simPlotStrings", [f"{area['area_id']} {area['search_altitude_m']:g}m"],
+                         [vec(cn, ce, top + 5)], 10.0, color, 3600.0)
+            except Exception:  # noqa: BLE001 - 글자 표시는 없어도 된다
+                pass
         path = paths.get(area["area_id"])
         extra = ""
         if path:
@@ -456,7 +510,8 @@ def draw(args):
             rpc.call("simPlotLineStrip", [vec(*to_ned(lat, lon), top) for lat, lon in path],
                      light, args.thickness * 0.4, -1.0, True)
             extra = f", 지그재그 웨이포인트 {len(path)}개"
-        print(f"  {area['area_id']}: 고도 {area['search_altitude_m']:g}m, 중심 북{cn:+.0f} 동{ce:+.0f}m{extra}")
+        print(f"  {area['area_id']}{f' ({name})' if name else ''}: 고도 {area['search_altitude_m']:g}m, "
+              f"중심 북{cn:+.0f} 동{ce:+.0f}m{extra}")
     print("AirSim 화면에 그렸다. 지우기: python3 map_probe.py draw --clear")
 
 
@@ -467,10 +522,13 @@ def main(argv=None):
     d = sub.add_parser("draw", help="임무 파일의 구역을 AirSim 화면에 그린다 (영상·확인용)")
     d.add_argument("mission", nargs="?", help="임무 파일 (예: scenarios/missions/mission-101.json)")
     d.add_argument("--clear", action="store_true", help="그린 것을 지우기만 한다")
-    d.add_argument("--thickness", type=float, default=50.0, help="선 두께 (기본 50)")
+    d.add_argument("--thickness", type=float, default=15.0,
+                   help="섹터 선 두께 (기본 15. 예전 50. 모서리 기둥은 0.6배, 수색 경로는 0.4배)")
     d.add_argument("--drones-config", default=os.path.join(BASE, "scenarios", "drones.sitl.json"),
                    help="수색 경로 계산에 쓸 미들웨어 드론 설정 (기본 scenarios/drones.sitl.json)")
-    d.add_argument("--no-paths", action="store_true", help="섹터 경계만 그리고 수색 경로는 그리지 않는다")
+    d.add_argument("--paths", action="store_true", help="지그재그 수색 경로도 그린다 (기본 안 그림)")
+    d.add_argument("--labels", action="store_true", help="섹터 이름·고도 글씨도 띄운다 (기본 안 띄움)")
+    d.add_argument("--no-paths", action="store_true", help=argparse.SUPPRESS)   # 예전 옵션. 이제 기본이 안 그림
     d.add_argument("--host", default=DEFAULT_HOST)
     d.add_argument("--port", type=int, default=None)
     d.set_defaults(func=draw)

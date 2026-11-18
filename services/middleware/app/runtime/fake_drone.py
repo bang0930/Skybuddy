@@ -166,8 +166,7 @@ class FakeDrone:
             "vibration_y": 0.02 if is_mavlink else None,
             "vibration_z": 0.05 if is_mavlink else None,
             "clipping": 0 if is_mavlink else None,
-            # The simulation adapters report 100 while no link fault is injected.
-            "link_quality_pct": 100.0,
+            "link_quality_pct": 100.0,  # simulation: fault injection fills it (no fault = 100)
             "timestamp": time.time(),
         }
 

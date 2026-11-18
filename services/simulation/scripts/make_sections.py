@@ -40,11 +40,13 @@ MISSION_ID = "mission-101"
 # 이름은 sector-행-열: 행 0 = 홈에 가까운 남쪽 줄, 1 = 먼 북쪽 줄 / 열 0 = 서쪽, 1 = 동쪽.
 # 한 변 125m: 촬영 폭 60m(30m 고도, 5주차 실측)로 지그재그 3줄이 나온다 (100m 면 2줄뿐이다).
 # 고도를 섹터마다 10m 씩 다르게 해서, 어느 드론이 어느 섹터를 맡아도 두 드론의 비행 고도가 겹치지 않는다.
+# name = 관제 화면(미니맵)·사용자가 부르는 이름. 홈에서 가장 먼 섹터가 북, 가까운 섹터가 남, 북을 볼 때 왼쪽이 서
+# (minimap.py·map_probe.py compass_names 와 같은 규칙). 임무 설명에 넣어 LLM 이 "북쪽 섹터" 를 sector-1-1 로 고르게 한다.
 SECTIONS = [
-    {"id": "sector-0-0", "south": 50, "north": 175, "west": 50, "east": 175, "alt": 30},
-    {"id": "sector-0-1", "south": 50, "north": 175, "west": 175, "east": 300, "alt": 40},
-    {"id": "sector-1-0", "south": 175, "north": 300, "west": 50, "east": 175, "alt": 50},
-    {"id": "sector-1-1", "south": 175, "north": 300, "west": 175, "east": 300, "alt": 60},
+    {"id": "sector-0-0", "name": "남", "south": 50, "north": 175, "west": 50, "east": 175, "alt": 30},
+    {"id": "sector-0-1", "name": "동", "south": 50, "north": 175, "west": 175, "east": 300, "alt": 40},
+    {"id": "sector-1-0", "name": "서", "south": 175, "north": 300, "west": 50, "east": 175, "alt": 50},
+    {"id": "sector-1-1", "name": "북", "south": 175, "north": 300, "west": 175, "east": 300, "alt": 60},
 ]
 LETTERS = "ABCDEFGH"
 
@@ -171,13 +173,19 @@ def main(argv=None):
     if not ok_all and not args.force:
         sys.exit("\n위험한 구역이 있어 임무 파일을 쓰지 않았다. 구역이나 고도를 고쳐 다시 실행할 것 (--force 로 강제)")
 
-    parts = ", ".join(f"{sec['id']} 약 {sec['dist']:.0f}m·고도 {sec['alt']}m" for sec in SECTIONS)
+    parts = ", ".join(f"{sec['id']} = {sec['name']}({'홈에서 ' if i == 0 else ''}약 {sec['dist']:.0f}m, "
+                      f"고도 {sec['alt']}m)" for i, sec in enumerate(SECTIONS))
     instruction = (
-        "홈(이륙 지점) 북동쪽 열린 지대를 2x2 섹터로 나눴다. 이름은 sector-행-열이며 행 0은 홈에 가까운 "
-        "남쪽 줄, 1은 먼 북쪽 줄, 열 0은 서쪽, 1은 동쪽이다. 홈에서 섹터 중심까지 거리와 탐색 고도는 "
-        f"{parts} 이다. 섹터마다 탐색 고도가 달라 두 드론의 비행 고도가 겹치지 않는다. "
+        "홈(이륙 지점) 북동쪽 열린 지대를 2x2 섹터로 나눴다. 관제 화면(미니맵)과 사용자는 섹터를 동서남북으로 부른다: "
+        f"{parts}. 홈에서 가장 가까운 섹터가 남, 가장 먼 섹터가 북이다. "
+        "사용자가 북·남·동·서로 말하면 이 대응대로 area_id 를 고른다. "
+        "섹터마다 탐색 고도가 달라 두 드론의 비행 고도가 겹치지 않는다. "
         "배정된 섹터는 미들웨어가 지그재그로 수색한 뒤 홈으로 돌아와 착륙한다. "
-        "드론 상태(배터리, 통신 연결)를 보고 드론마다 섹터를 하나씩 배정해 줘."
+        "사용자가 섹터를 정하지 않거나 드론 상태를 보고 정하라고 하면 드론 상태(배터리, 통신 연결)를 보고 드론마다 "
+        "섹터를 하나씩 배정하되, 배터리가 적은 드론일수록 홈에서 가까운 섹터를, 배터리가 많은 드론에 먼 섹터를 준다. "
+        "배터리 차이가 10%p 안이면 같은 것으로 보고 drone-01 에 가까운 섹터, drone-02 에 먼 섹터를 준다. "
+        "작업이 실패한 드론은 unavailable 이 되어 다시 배정할 수 없다. 사용자가 못 끝낸 섹터를 다시 수색하라고 하면 "
+        "get_mission_status 에서 failed 로 끝난 작업의 area_id 를 찾아 available 인 드론에 배정한다."
     )
     mission = {"mission_id": MISSION_ID, "instruction": instruction, "search_areas": areas}
     os.makedirs(OUT_DIR, exist_ok=True)

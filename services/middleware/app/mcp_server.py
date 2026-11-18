@@ -29,6 +29,7 @@ Environment variables:
 - ``MIDDLEWARE_EVENT_LOG``: JSONL event log path
 """
 
+import asyncio
 import os
 import sys
 from collections.abc import Mapping
@@ -316,8 +317,10 @@ def main() -> int:
             )
         else:
             server.run(transport="stdio", show_banner=False)
-    except KeyboardInterrupt:
-        pass  # Ctrl+C is the normal way to stop the HTTP server.
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        # Ctrl+C is the normal way to stop the HTTP server. On Python 3.10 (ROS 2 Humble)
+        # anyio's runner reports it as CancelledError: Task.uncancel() exists only on 3.11+.
+        pass
     finally:
         stop_service(service, transport)
     return 0

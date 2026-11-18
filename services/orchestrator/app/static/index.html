@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SkyBuddy 관제</title>
+<script>
+  // 저장된 화면 모드를 그리기 전에 적용한다 (새로고침 때 깜빡임 방지).
+  try {
+    const saved = localStorage.getItem("skybuddy-theme");
+    if (saved === "dark" || saved === "light") document.documentElement.dataset.theme = saved;
+  } catch (error) { /* 저장소를 못 쓰는 브라우저면 컴퓨터 설정을 따른다 */ }
+</script>
+<style>
+  /* 색은 로고에서 가져왔다: 남색 윤곽선, 크림 바탕, 하늘색 프로펠러·산, 주황 경광등·구급상자 */
+  :root {
+    --bg: #f6ecd9; --panel: #fffaf0; --soft: #f3e8d3; --line: #e2d5bb;
+    --navy: #13233f; --frame: #13233f; --text: #13233f; --sub: #3d4e6c; --muted: #7d879a;
+    --sky: #6f9fd8; --sky-bg: #e1edfb; --sky-line: #a8c8ee; --sky-text: #1d4c86;
+    --orange: #ee8a36; --orange-hover: #d9762a; --orange-bg: #fde6d0; --orange-text: #a1520f;
+    --ok: #3f7a22; --ok-dot: #5d9b34; --done-bg: #e3f0d4;
+    --bad: #b23a34; --bad-bg: #fbe2df;
+    --on-navy: #fbf3e3;
+  }
+  /* 다크 모드: 헤더의 전환 버튼으로 고르면 data-theme="dark",
+     고르지 않았으면 컴퓨터 설정(prefers-color-scheme)을 따른다. 아래 두 블록은 같은 값이다. */
+  :root[data-theme="dark"] {
+    --bg: #050a15; --panel: #172a4c; --soft: #223a64; --line: #36558c; --frame: #6f9fd8;
+    --navy: #0b1631; --text: #fbf3e3; --sub: #c9d2e3; --muted: #93a1bd;
+    --sky: #8db6e8; --sky-bg: #22406c; --sky-line: #4f7bb5; --sky-text: #cfe1f7;
+    --orange: #f09a4f; --orange-hover: #f4ad6c; --orange-bg: #5a3214; --orange-text: #fbc89a;
+    --ok: #a6d27f; --ok-dot: #8cc062; --done-bg: #2a4419;
+    --bad: #f2a29c; --bad-bg: #5c1f1c;
+    --on-navy: #fbf3e3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #050a15; --panel: #172a4c; --soft: #223a64; --line: #36558c; --frame: #6f9fd8;
+      --navy: #0b1631; --text: #fbf3e3; --sub: #c9d2e3; --muted: #93a1bd;
+      --sky: #8db6e8; --sky-bg: #22406c; --sky-line: #4f7bb5; --sky-text: #cfe1f7;
+      --orange: #f09a4f; --orange-hover: #f4ad6c; --orange-bg: #5a3214; --orange-text: #fbc89a;
+      --ok: #a6d27f; --ok-dot: #8cc062; --done-bg: #2a4419;
+      --bad: #f2a29c; --bad-bg: #5c1f1c;
+      --on-navy: #fbf3e3;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
+  .app { max-width: 1120px; margin: 16px auto; padding: 0 16px; }
+  .card { background: var(--panel); border: 2px solid var(--frame); border-radius: 18px; overflow: hidden; }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 20px; background: var(--navy); color: var(--on-navy); }
+  header img { width: 46px; height: 46px; border-radius: 50%; border: 2px solid var(--on-navy); display: block; }
+  header h1 { font-size: 20px; font-weight: 800; letter-spacing: 0.5px; margin: 0; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; }
+  .link { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 14px;
+          background: rgba(251, 243, 227, 0.12); padding: 4px 12px; border-radius: 999px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; background: var(--muted); flex: none; }
+  .dot.ok { background: var(--ok-dot); } .dot.bad { background: var(--bad); }
+
+  .chat { display: flex; flex-direction: column; border-bottom: 2px solid var(--line); }
+  #messages { height: calc(100vh - 470px); min-height: 300px; overflow-y: auto; padding: 20px 24px;
+              display: flex; flex-direction: column; gap: 14px; }
+  .hint { color: var(--muted); font-size: 15px; text-align: center; margin: auto 0; }
+  .msg { max-width: 78%; padding: 10px 15px; border-radius: 16px; white-space: pre-wrap; word-break: break-word; }
+  .msg.user { align-self: flex-end; background: var(--sky-bg); color: var(--sky-text);
+              border: 1.5px solid var(--sky-line); border-bottom-right-radius: 4px; }
+  .msg.bot { align-self: flex-start; background: var(--soft); border: 1.5px solid var(--line); border-bottom-left-radius: 4px; }
+  .msg.err { align-self: flex-start; background: var(--bad-bg); color: var(--bad); border-bottom-left-radius: 4px; }
+  .meta { display: block; font-size: 13px; color: var(--muted); margin-top: 6px; }
+  .pending { align-self: flex-start; color: var(--muted); font-size: 15px; }
+  form { display: flex; gap: 10px; padding: 14px 18px; border-top: 2px solid var(--line); }
+  input { flex: 1; font: inherit; padding: 11px 16px; border: 2px solid var(--line); border-radius: 999px;
+          background: var(--panel); color: var(--text); }
+  input:focus { outline: none; border-color: var(--sky); }
+  button { font: inherit; font-weight: 700; padding: 11px 24px; border-radius: 999px; border: 2px solid var(--navy);
+           background: var(--orange); color: #ffffff; cursor: pointer; }
+  button:hover { background: var(--orange-hover); }
+  .theme-btn { font-size: 14px; font-weight: 600; padding: 4px 12px; border-radius: 999px;
+               border: 1px solid rgba(251, 243, 227, 0.4); background: transparent; color: var(--on-navy); }
+  .theme-btn:hover { background: rgba(251, 243, 227, 0.15); }
+
+  .bottom { display: grid; grid-template-columns: 1fr 1fr; }
+  .bottom > section { padding: 16px 20px; min-width: 0; }
+  .bottom > section + section { border-left: 2px solid var(--line); }
+  .label { font-size: 14px; font-weight: 700; color: var(--sub); margin-bottom: 8px; display: flex; justify-content: space-between; }
+  .label small { color: var(--muted); font-size: 13px; font-weight: 400; }
+  .list { border: 1.5px solid var(--line); border-radius: 12px; background: var(--panel); }
+  .row { padding: 10px 12px; } .row + .row { border-top: 1.5px solid var(--line); }
+  .between { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+  .bar { height: 7px; background: var(--soft); border-radius: 4px; margin-top: 8px; overflow: hidden; }
+  .bar > div { height: 7px; background: var(--sky); border-radius: 4px; }
+  .bar.done > div { background: var(--ok-dot); } .bar.bad > div { background: var(--bad); }
+  .small { font-size: 13px; color: var(--muted); margin-top: 4px; }
+  .empty { color: var(--muted); font-size: 15px; padding: 10px 2px; }
+  .group + .group { margin-top: 16px; }
+  .badge { font-size: 13px; font-weight: 600; padding: 2px 10px; border-radius: 999px; background: var(--soft); color: var(--sub); white-space: nowrap; }
+  .badge.running, .badge.returning { background: var(--sky-bg); color: var(--sky-text); }
+  .badge.assigned { background: var(--orange-bg); color: var(--orange-text); }
+  .badge.succeeded { background: var(--done-bg); color: var(--ok); }
+  .badge.failed, .badge.unavailable { background: var(--bad-bg); color: var(--bad); }
+  .drone { display: flex; align-items: center; gap: 8px; font-size: 15px; padding: 5px 0; }
+  .drone .proto { font-size: 13px; color: var(--muted); }
+  .drone .battery { font-size: 14px; color: var(--sub); min-width: 104px; text-align: right; }
+  .drone .battery.low { color: var(--bad); font-weight: 700; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { font-size: 13px; padding: 3px 12px; border-radius: 999px; border: 1.5px solid var(--line); color: var(--sub); }
+  .chip.active { border-color: var(--sky); background: var(--sky-bg); color: var(--sky-text); }
+  .banner { margin: 12px 18px 0; padding: 10px 14px; border-radius: 12px; background: var(--bad-bg); color: var(--bad); font-size: 15px; }
+  @media (max-width: 720px) {
+    .bottom { grid-template-columns: 1fr; }
+    .bottom > section + section { border-left: 0; border-top: 2px solid var(--line); }
+    .msg { max-width: 92%; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="card">
+    <header>
+      <img src="/static/logo.jpg" alt="SkyBuddy 로고">
+      <h1>SkyBuddy 관제</h1>
+      <span class="link"><span id="linkDot" class="dot"></span><span id="linkText">확인 중…</span></span>
+      <button type="button" id="themeBtn" class="theme-btn" aria-label="화면 모드 전환">다크 모드</button>
+    </header>
+    <div id="banner" class="banner" hidden></div>
+
+    <div class="chat">
+      <div id="messages">
+        <div class="hint" id="hint">자연어로 명령하세요. 예: 북쪽 구역을 드론 두 대가 나눠 수색해 줘</div>
+      </div>
+      <form id="form">
+        <input id="input" autocomplete="off" placeholder="남쪽 구역에 한 대 보내 줘" aria-label="자연어 명령">
+        <button type="submit">전송</button>
+      </form>
+    </div>
+
+    <div class="bottom">
+      <section>
+        <div class="label">작업 <small id="updated"></small></div>
+        <div id="tasks"><div class="empty">아직 배정된 작업이 없습니다.</div></div>
+      </section>
+      <section>
+        <div class="group">
+          <div class="label">임무 상태</div>
+          <span id="missionState" class="badge">-</span>
+        </div>
+        <div class="group">
+          <div class="label">드론</div>
+          <div id="drones"><div class="empty">-</div></div>
+        </div>
+        <div class="group">
+          <div class="label">탐색 구역</div>
+          <div id="areas" class="chips"></div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+const POLL_MS = 3000;
+const LOW_BATTERY = 20;
+const STATE_KO = { idle: "대기", running: "진행 중", succeeded: "완료", failed: "실패" };
+const DRONE_KO = { available: "대기", assigned: "배정됨", returning: "귀환 중", unavailable: "사용 불가" };
+const COMMAND_KO = { takeoff: "이륙", goto: "이동", land: "착륙", return_home: "귀환" };
+const PROTOCOL_KO = { mavlink: "MAVLink", ap_dds: "AP_DDS" };
+
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+};
+const clock = (date) => date.toLocaleTimeString("ko-KR", { hour12: false });
+
+let sending = false;
+
+const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+const isDark = () => (document.documentElement.dataset.theme ?? (darkQuery.matches ? "dark" : "light")) === "dark";
+function updateThemeButton() {
+  $("themeBtn").textContent = isDark() ? "밝은 모드" : "다크 모드";
+}
+$("themeBtn").addEventListener("click", () => {
+  const next = isDark() ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("skybuddy-theme", next); } catch (error) { /* 저장 못 해도 화면은 바뀐다 */ }
+  updateThemeButton();
+});
+darkQuery.addEventListener("change", updateThemeButton);
+updateThemeButton();
+
+function addMessage(kind, text, meta) {
+  $("hint")?.remove();
+  const box = el("div", "msg " + kind, text);
+  if (meta) box.appendChild(el("span", "meta", meta));
+  $("messages").appendChild(box);
+  $("messages").scrollTop = $("messages").scrollHeight;
+  return box;
+}
+
+$("form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const text = $("input").value.trim();
+  if (!text || sending) return;
+  sending = true;
+  $("input").value = "";
+  addMessage("user", text);
+  const pending = addMessage("pending", "LLM이 처리하는 중…");
+  const started = Date.now();
+  try {
+    const res = await fetch("/command?message=" + encodeURIComponent(text), { method: "POST" });
+    const seconds = Math.round((Date.now() - started) / 1000);
+    pending.remove();
+    if (!res.ok) {
+      addMessage("err", `명령을 처리하지 못했습니다 (HTTP ${res.status}). 오케스트레이터 터미널의 로그를 확인하세요.`);
+    } else {
+      const body = await res.json();
+      addMessage("bot", body.result ?? JSON.stringify(body), `${clock(new Date())} · 응답 ${seconds}초`);
+    }
+  } catch (error) {
+    pending.remove();
+    addMessage("err", "오케스트레이터에 연결할 수 없습니다.");
+  } finally {
+    sending = false;
+    refreshStatus();
+  }
+});
+
+function setLink(ok, text) {
+  $("linkDot").className = "dot " + (ok ? "ok" : "bad");
+  $("linkText").textContent = text;
+}
+
+function renderTasks(tasks) {
+  const box = $("tasks");
+  box.replaceChildren();
+  if (!tasks.length) { box.appendChild(el("div", "empty", "아직 배정된 작업이 없습니다.")); return; }
+  const list = el("div", "list");
+  for (const task of [...tasks].reverse()) {
+    const row = el("div", "row");
+    const head = el("div", "between");
+    head.append(el("span", "mono", task.task_id), el("span", "badge " + task.state, STATE_KO[task.state] ?? task.state));
+    const pct = task.total_commands ? Math.round((task.done_commands / task.total_commands) * 100) : 0;
+    const bar = el("div", "bar" + (task.state === "succeeded" ? " done" : task.state === "failed" ? " bad" : ""));
+    const fill = el("div"); fill.style.width = pct + "%"; bar.appendChild(fill);
+    const now = task.current_command ? (COMMAND_KO[task.current_command] ?? task.current_command) + " 진행 중" : "";
+    const foot = el("div", "between small");
+    foot.append(el("span", "", `${task.area_id}${now ? " · " + now : ""}`), el("span", "", `${task.done_commands} / ${task.total_commands}`));
+    row.append(head, bar, foot);
+    list.appendChild(row);
+  }
+  box.appendChild(list);
+}
+
+function renderDrones(drones) {
+  const box = $("drones");
+  box.replaceChildren();
+  for (const drone of drones) {
+    const row = el("div", "drone");
+    row.append(
+      el("span", "dot " + (drone.connection === "connected" ? "ok" : "bad")),
+      el("span", "mono", drone.drone_id),
+      el("span", "proto", PROTOCOL_KO[drone.protocol] ?? drone.protocol),
+    );
+    const badge = el("span", "badge " + drone.status, DRONE_KO[drone.status] ?? drone.status);
+    badge.style.marginLeft = "auto";
+    const pct = drone.battery_percent;
+    const battery = el("span", "battery" + (pct != null && pct <= LOW_BATTERY ? " low" : ""),
+      pct == null ? "배터리 -" : `배터리 ${Math.round(pct)}%`);
+    row.append(badge, battery);
+    box.appendChild(row);
+  }
+}
+
+function renderAreas(areaIds, tasks) {
+  const busy = new Set(tasks.filter((t) => t.state === "running").map((t) => t.area_id));
+  const box = $("areas");
+  box.replaceChildren(...areaIds.map((id) => el("span", "chip mono" + (busy.has(id) ? " active" : ""), id)));
+}
+
+async function refreshStatus() {
+  try {
+    const res = await fetch("/status");
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.detail ?? `HTTP ${res.status}`);
+    const mission = body.missions[0];
+    $("banner").hidden = true;
+    setLink(true, "미들웨어 연결됨");
+    if (!mission) return;
+    $("missionState").className = "badge " + mission.state;
+    $("missionState").textContent = STATE_KO[mission.state] ?? mission.state;
+    renderTasks(mission.tasks);
+    renderDrones(mission.drones);
+    renderAreas(mission.area_ids, mission.tasks);
+    $("updated").textContent = clock(new Date()) + " 갱신";
+  } catch (error) {
+    setLink(false, "미들웨어 연결 끊김");
+    $("banner").textContent = String(error.message || error) + " 3초 뒤 다시 시도합니다.";
+    $("banner").hidden = false;
+  }
+}
+
+refreshStatus();
+setInterval(refreshStatus, POLL_MS);
+$("input").focus();
+</script>
+</body>
+</html>
