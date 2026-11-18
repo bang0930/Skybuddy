@@ -112,8 +112,25 @@
   .minimap .off b { color: var(--sub); font-size: 15px; }
   .minimap .off code { font-size: 12px; word-break: break-all; }
   .minimap.on .off, .minimap:not(.on) iframe { display: none; }
-  .drone .battery { font-size: 14px; color: var(--sub); min-width: 104px; text-align: right; }
+  .drone .net { display: inline-flex; align-items: center; gap: 6px; }
+  /* 배터리: 숫자 다음 가로 배터리 아이콘. 남은 양은 초록, 빈 부분은 회청색 */
+  .drone .battery { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px;
+                    font-size: 14px; color: var(--sub); min-width: 86px; }
   .drone .battery.low { color: var(--bad); font-weight: 700; }
+  .batt { position: relative; display: inline-block; width: 26px; height: 13px; padding: 1.5px;
+          border: 1.5px solid var(--sub); border-radius: 4px; background: var(--muted); background-clip: content-box; }
+  .batt::after { content: ""; position: absolute; right: -4.5px; top: 50%; transform: translateY(-50%);
+                 width: 2.5px; height: 5px; border-radius: 0 2px 2px 0; background: var(--sub); }
+  .batt > span { display: block; height: 100%; border-radius: 1.5px; background: var(--ok-dot); }
+  .battery.low .batt > span { background: var(--bad); }
+  /* 링크 품질: 휴대폰 상태 표시줄처럼 막대 4칸. 채운 막대는 currentColor, 빈 막대는 --line */
+  .signal { display: inline-flex; align-items: flex-end; gap: 2px; height: 14px; width: 30px; color: var(--ok-dot); }
+  .signal i { display: block; width: 4px; border-radius: 1px; background: var(--line); }
+  .signal i:nth-child(1) { height: 5px; } .signal i:nth-child(2) { height: 8px; }
+  .signal i:nth-child(3) { height: 11px; } .signal i:nth-child(4) { height: 14px; }
+  .signal i.on { background: currentColor; }
+  .signal.warn { color: var(--orange); } .signal.bad { color: var(--bad); }
+  .signal .x { font-size: 12px; font-weight: 700; line-height: 1; margin-left: 1px; color: var(--bad); }
   .chips { display: flex; flex-wrap: wrap; gap: 8px; }
   .chip { font-size: 13px; padding: 3px 12px; border-radius: 999px; border: 1.5px solid var(--line); color: var(--sub); }
   .chip.active { border-color: var(--sky); background: var(--sky-bg); color: var(--sky-text); }
@@ -146,7 +163,7 @@
         <div class="hint" id="hint">자연어로 명령하세요. 예: 북쪽 구역을 드론 두 대가 나눠 수색해 줘</div>
       </div>
       <form id="form">
-        <input id="input" autocomplete="off" placeholder="남쪽 구역에 한 대 보내 줘" aria-label="자연어 명령">
+        <input id="input" autocomplete="off" placeholder="비행 경로 및 임무를 요청하세요..." aria-label="자연어 명령">
         <button type="submit">전송</button>
       </form>
     </div>
@@ -187,11 +204,52 @@
 
 <script>
 const POLL_MS = 3000;
-const LOW_BATTERY = 20;
+const LOW_BATTERY = 30;
+// 링크 품질(%) → 막대 칸 수. 0이면 끊김, 1~25 → 1칸, 26~50 → 2칸, 51~75 → 3칸, 76~100 → 4칸.
+// 시뮬레이션 링크 장애의 degraded 기본값은 20%(1칸), down은 0%.
+function signalLevel(pct) {
+  if (pct == null) return null;
+  if (pct <= 0) return 0;
+  return Math.min(4, Math.ceil(pct / 25));
+}
+
+// 배터리(%) → "64%" 숫자 다음 가로 배터리 아이콘. 30% 이하이면 빨간색.
+function batteryIcon(pct) {
+  const known = pct != null;
+  const value = known ? Math.max(0, Math.min(100, pct)) : 0;
+  const label = known ? `배터리 ${Math.round(value)}%` : "배터리 정보 없음";
+  const box = el("span", "battery" + (known && value <= LOW_BATTERY ? " low" : ""));
+  box.title = label;
+  box.setAttribute("aria-label", label);
+  const icon = el("span", "batt");
+  const fill = el("span"); fill.style.width = value + "%";
+  icon.appendChild(fill);
+  box.append(el("span", "", known ? `${Math.round(value)}%` : "-"), icon);
+  return box;
+}
+
+function signalBars(pct) {
+  const level = signalLevel(pct);
+  const tone = level == null ? "" : level <= 1 ? " bad" : level === 2 ? " warn" : "";
+  const label = pct == null ? "링크 품질 정보 없음"
+    : level === 0 ? "링크 끊김 (0%)" : `링크 품질 ${Math.round(pct)}%`;
+  const box = el("span", "signal" + tone);
+  box.title = label;
+  box.setAttribute("role", "img");
+  box.setAttribute("aria-label", label);
+  for (let i = 1; i <= 4; i++) box.appendChild(el("i", level != null && i <= level ? "on" : ""));
+  if (level === 0) box.appendChild(el("span", "x", "×"));
+  return box;
+}
 const STATE_KO = { idle: "대기", running: "진행 중", succeeded: "완료", failed: "실패" };
 const DRONE_KO = { available: "대기", assigned: "배정됨", returning: "귀환 중", unavailable: "사용 불가" };
 const COMMAND_KO = { takeoff: "이륙", goto: "이동", land: "착륙", return_home: "귀환" };
 const PROTOCOL_KO = { mavlink: "MAVLink", ap_dds: "AP_DDS" };
+// mission-101 2x2 섹터의 방위 이름. map_probe.py compass_names()와 mission-101.json instruction과 같다:
+// 홈에서 가장 가까운 섹터 = S, 가장 먼 섹터 = N, 홈에서 N을 볼 때 왼쪽 = W, 오른쪽 = E.
+// 섹터 배치가 다른 임무를 쓰면 이 표도 고친다. 표에 없는 구역 ID는 그대로 보여 준다.
+const AREA_LABEL = { "sector-0-0": "S", "sector-0-1": "E", "sector-1-0": "W", "sector-1-1": "N" };
+const areaLabel = (id) => AREA_LABEL[id] ?? id;
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => {
@@ -274,7 +332,9 @@ function renderTasks(tasks) {
     const fill = el("div"); fill.style.width = pct + "%"; bar.appendChild(fill);
     const now = task.current_command ? (COMMAND_KO[task.current_command] ?? task.current_command) + " 진행 중" : "";
     const foot = el("div", "between small");
-    foot.append(el("span", "", `${task.area_id}${now ? " · " + now : ""}`), el("span", "", `${task.done_commands} / ${task.total_commands}`));
+    const area = el("span", "", `${areaLabel(task.area_id)}${now ? " · " + now : ""}`);
+    area.title = task.area_id;
+    foot.append(area, el("span", "", `${task.done_commands} / ${task.total_commands}`));
     row.append(head, bar, foot);
     list.appendChild(row);
   }
@@ -286,17 +346,20 @@ function renderDrones(drones) {
   box.replaceChildren();
   for (const drone of drones) {
     const row = el("div", "drone");
-    row.append(
+    // 네트워크: 연결 점 바로 옆에 링크 품질 막대
+    const net = el("span", "net");
+    net.append(
       el("span", "dot " + (drone.connection === "connected" ? "ok" : "bad")),
+      signalBars(drone.link_quality_pct),
+    );
+    row.append(
+      net,
       el("span", "mono", drone.drone_id),
       el("span", "proto", PROTOCOL_KO[drone.protocol] ?? drone.protocol),
     );
     const badge = el("span", "badge " + drone.status, DRONE_KO[drone.status] ?? drone.status);
     badge.style.marginLeft = "auto";
-    const pct = drone.battery_percent;
-    const battery = el("span", "battery" + (pct != null && pct <= LOW_BATTERY ? " low" : ""),
-      pct == null ? "배터리 -" : `배터리 ${Math.round(pct)}%`);
-    row.append(badge, battery);
+    row.append(badge, batteryIcon(drone.battery_percent));
     box.appendChild(row);
   }
 }
@@ -304,7 +367,11 @@ function renderDrones(drones) {
 function renderAreas(areaIds, tasks) {
   const busy = new Set(tasks.filter((t) => t.state === "running").map((t) => t.area_id));
   const box = $("areas");
-  box.replaceChildren(...areaIds.map((id) => el("span", "chip mono" + (busy.has(id) ? " active" : ""), id)));
+  box.replaceChildren(...areaIds.map((id) => {
+    const chip = el("span", "chip mono" + (busy.has(id) ? " active" : ""), areaLabel(id));
+    chip.title = id;
+    return chip;
+  }));
 }
 
 async function refreshStatus() {
