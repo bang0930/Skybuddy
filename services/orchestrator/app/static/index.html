@@ -58,8 +58,11 @@
   .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; background: var(--muted); flex: none; }
   .dot.ok { background: var(--ok-dot); } .dot.bad { background: var(--bad); }
 
-  .chat { display: flex; flex-direction: column; border-bottom: 2px solid var(--line); }
-  #messages { height: calc(100vh - 470px); min-height: 300px; overflow-y: auto; padding: 20px 24px;
+  /* 한 화면에 맞추기: 카드를 창 높이에 맞추고, 채팅이 남는 공간을 쓴다. 아래 3칸은 높이 고정, 칸 안에서만 스크롤 */
+  .app { height: calc(100vh - 32px); display: flex; flex-direction: column; }
+  .card { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .chat { flex: 1; min-height: 0; display: flex; flex-direction: column; border-bottom: 2px solid var(--line); }
+  #messages { flex: 1; min-height: 120px; overflow-y: auto; padding: 20px 24px;
               display: flex; flex-direction: column; gap: 14px; }
   .hint { color: var(--muted); font-size: 15px; text-align: center; margin: auto 0; }
   .msg { max-width: 78%; padding: 10px 15px; border-radius: 16px; white-space: pre-wrap; word-break: break-word; }
@@ -80,8 +83,11 @@
                border: 1px solid rgba(251, 243, 227, 0.4); background: transparent; color: var(--on-navy); }
   .theme-btn:hover { background: rgba(251, 243, 227, 0.15); }
 
-  .bottom { display: grid; grid-template-columns: 1fr 1fr; }
-  .bottom > section { padding: 16px 20px; min-width: 0; }
+  /* 아래 영역 3칸: 작업 | 임무 상태 | 미니맵 */
+  .bottom { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr) minmax(0, 1fr); }
+  .bottom { flex: none; height: 290px; }
+  .bottom > section { padding: 14px 20px; min-width: 0; min-height: 0; overflow-y: auto; }
+  .bottom > section.map-section { display: flex; flex-direction: column; overflow: hidden; }
   .bottom > section + section { border-left: 2px solid var(--line); }
   .label { font-size: 14px; font-weight: 700; color: var(--sub); margin-bottom: 8px; display: flex; justify-content: space-between; }
   .label small { color: var(--muted); font-size: 13px; font-weight: 400; }
@@ -100,7 +106,17 @@
   .badge.succeeded { background: var(--done-bg); color: var(--ok); }
   .badge.failed, .badge.unavailable { background: var(--bad-bg); color: var(--bad); }
   .drone { display: flex; align-items: center; gap: 8px; font-size: 15px; padding: 5px 0; }
+  .drone .mono { white-space: nowrap; }
   .drone .proto { font-size: 13px; color: var(--muted); }
+  /* 미니맵: minimap.py(포트 8765) 화면을 끼워 넣는다. 꺼져 있으면 점선 상자 안내 */
+  .minimap { position: relative; flex: 1; min-height: 0; border-radius: 14px; overflow: hidden; background: var(--soft); }
+  .minimap iframe { display: block; width: 100%; height: 100%; border: 0; }
+  .minimap .off { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+                  justify-content: center; gap: 6px; padding: 0 16px; text-align: center; font-size: 14px;
+                  color: var(--muted); border: 2px dashed var(--line); border-radius: 14px; }
+  .minimap .off b { color: var(--sub); font-size: 15px; }
+  .minimap .off code { font-size: 12px; word-break: break-all; }
+  .minimap.on .off, .minimap:not(.on) iframe { display: none; }
   .drone .net { display: inline-flex; align-items: center; gap: 6px; }
   /* 배터리: 숫자 다음 가로 배터리 아이콘. 남은 양은 초록, 빈 부분은 회청색 */
   .drone .battery { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px;
@@ -124,6 +140,20 @@
   .chip { font-size: 13px; padding: 3px 12px; border-radius: 999px; border: 1.5px solid var(--line); color: var(--sub); }
   .chip.active { border-color: var(--sky); background: var(--sky-bg); color: var(--sky-text); }
   .banner { margin: 12px 18px 0; padding: 10px 14px; border-radius: 12px; background: var(--bad-bg); color: var(--bad); font-size: 15px; }
+  /* 중간 너비: 작업 | 임무 상태 2칸, 미니맵은 아래 한 줄 전체 */
+  /* 창이 낮거나 좁으면 한 화면 맞추기를 풀고 페이지 전체를 스크롤한다 */
+  @media (max-width: 1000px), (max-height: 640px) {
+    .app { height: auto; display: block; }
+    .card, .chat { display: block; }
+    #messages { height: 45vh; min-height: 260px; }
+    .bottom { height: auto; }
+    .bottom > section { overflow: visible; }
+    .minimap { flex: none; height: 260px; }
+  }
+  @media (max-width: 1000px) {
+    .bottom { grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); }
+    .bottom > section.map-section { grid-column: 1 / -1; border-left: 0; border-top: 2px solid var(--line); }
+  }
   @media (max-width: 720px) {
     .bottom { grid-template-columns: 1fr; }
     .bottom > section + section { border-left: 0; border-top: 2px solid var(--line); }
@@ -171,6 +201,17 @@
           <div id="areas" class="chips"></div>
         </div>
       </section>
+      <section class="map-section">
+        <div class="label">미니맵</div>
+        <div id="minimap" class="minimap">
+          <iframe id="minimapFrame" title="미니맵" loading="lazy"></iframe>
+          <div class="off">
+            <b>미니맵 꺼짐</b>
+            <span>시뮬레이션 PC에서 run_live.sh로 켜면 여기에 지도가 나옵니다</span>
+            <code id="minimapStatus"></code>
+          </div>
+        </div>
+      </section>
     </div>
   </div>
 </div>
@@ -180,6 +221,7 @@ const POLL_MS = 3000;
 const LOW_BATTERY = 30;
 // 링크 품질(%) → 막대 칸 수. 0이면 끊김, 1~25 → 1칸, 26~50 → 2칸, 51~75 → 3칸, 76~100 → 4칸.
 // 시뮬레이션 링크 장애의 degraded 기본값은 20%(1칸), down은 0%.
+const LOW_LINK = 30; // 이하이면 빨강 (배터리 LOW_BATTERY와 같은 기준)
 function signalLevel(pct) {
   if (pct == null) return null;
   if (pct <= 0) return 0;
@@ -203,7 +245,8 @@ function batteryIcon(pct) {
 
 function signalBars(pct) {
   const level = signalLevel(pct);
-  const tone = level == null ? "" : level <= 1 ? " bad" : level === 2 ? " warn" : "";
+  // 배터리와 같이 30% 이하이면 빨강, 31~50%는 주황, 그 위는 초록
+  const tone = level == null ? "" : pct <= LOW_LINK ? " bad" : pct <= 50 ? " warn" : "";
   const label = pct == null ? "링크 품질 정보 없음"
     : level === 0 ? "링크 끊김 (0%)" : `링크 품질 ${Math.round(pct)}%`;
   const box = el("span", "signal" + tone);
@@ -371,6 +414,30 @@ async function refreshStatus() {
 
 refreshStatus();
 setInterval(refreshStatus, POLL_MS);
+
+// 미니맵: 관제 화면을 연 컴퓨터의 minimap.py(포트 8765, run_live.sh가 켬)를 지도만 보이게 끼워 넣는다.
+// 다른 주소면 ?minimap=http://<주소>:8765 로 바꾼다. 5초마다 켜졌는지 확인해, 꺼지면 안내로 돌아가고
+// 다시 켜지면 새로고침 없이 지도를 붙인다.
+const MINIMAP_POLL_MS = 5000;
+const MINIMAP_BASE = new URLSearchParams(location.search).get("minimap")
+  || `http://${location.hostname || "127.0.0.1"}:8765`;
+let minimapUp = null;
+
+async function checkMinimap() {
+  let up = false;
+  try {
+    // 다른 포트라 응답 내용은 못 읽지만(no-cors), 서버가 떠 있으면 성공하고 꺼져 있으면 실패한다.
+    await fetch(`${MINIMAP_BASE}/state`, { mode: "no-cors", cache: "no-store" });
+    up = true;
+  } catch { up = false; }
+  if (up === minimapUp) return;
+  minimapUp = up;
+  $("minimap").classList.toggle("on", up);
+  $("minimapFrame").src = up ? `${MINIMAP_BASE}/?overlay=1&data=0` : "about:blank";
+  $("minimapStatus").textContent = up ? "" : `${MINIMAP_BASE} 연결 대기 중 · 5초마다 다시 확인`;
+}
+checkMinimap();
+setInterval(checkMinimap, MINIMAP_POLL_MS);
 $("input").focus();
 </script>
 </body>
